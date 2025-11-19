@@ -1,0 +1,22 @@
+# @package _global_
+
+defaults:
+  - override /data: default-spatial-all.yaml 
+  - _self_
+
+datamodule:
+  _target_: data.datamodule.DataModule
+
+modelmodule:
+  _target_: model.model_module.CLAPModelModule
+
+task: retrieval
+
+trainer:
+  max_epochs: 10
+
+model:
+  audio:
+    ckpt_path: ckpts/CLAP/630k-audioset-best.pt
+  text:
+    ckpt_path: ckpts/CLAP/630k-audioset-best.pt

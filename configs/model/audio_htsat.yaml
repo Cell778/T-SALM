@@ -1,0 +1,21 @@
+
+audio: 
+  backbone: HTSAT
+  ckpt_path: ckpts/HTSAT-fullset-imagenet-tiny-map=0.467.ckpt
+  output_dim: 768
+  kwargs:
+    spec_size: 256
+    patch_size: 4
+    patch_stride: [4, 4]
+    embed_dim: 96
+    depths: [2, 2, 6, 2]
+    num_heads: [4, 8, 16, 32]
+    window_size: 8
+    mlp_ratio: 4
+    qkv_bias: true
+    drop_rate: 0.
+    attn_drop_rate: 0.
+    drop_path_rate: 0.1
+    ape: false
+    patch_norm: true
+    norm_before_mlp: ln # ln | bn

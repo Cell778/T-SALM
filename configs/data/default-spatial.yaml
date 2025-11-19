@@ -1,0 +1,24 @@
+# if the duration of the audio is more than chunklen_sec, it will be truncated
+truncation: rand_trunc # rand_trunc, fusion
+# if the duration of the audio is less than chunklen_sec, it will be filled
+data_filling: repeatpad # repeatpad, repeat, pad 
+
+sample_rate: 24000
+nfft: 1024
+n_mels: 64
+hoplen: 240
+window: hann
+
+chunklen_sec: 10
+
+train_dataset:
+  sClotho: [train]
+  sAudioCaps: [train]
+
+valid_dataset:
+  sClotho: [valid]
+  sAudioCaps: [valid]
+
+test_dataset:
+  sClotho: [test]
+  # sAudioCaps: [test]

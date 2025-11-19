@@ -1,0 +1,26 @@
+# @package _global_
+
+defaults:
+  - override /data: default-spatial-all_1.yaml 
+  - _self_
+
+datamodule:
+  _target_: data.datamodule.DataModule
+
+modelmodule:
+  _target_: model.model_module.DOAModelModule
+
+model:
+  audio:
+    ckpt_path: ckpts/EINV2-HTSAT-0.514.ckpt
+  lr_scheduler:
+    warmup_epochs: 0
+  optimizer:
+    kwargs:
+      lr: 1e-4
+
+trainer:
+  max_epochs: 15
+task: spatial-retrieval
+
+experiment_name: DOA

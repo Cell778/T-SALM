@@ -1,0 +1,21 @@
+# @package _global_
+
+defaults:
+  - override /data: esc50 
+  - _self_
+
+datamodule:
+  _target_: data.datamodule.DataModule
+
+modelmodule:
+  _target_: model.model_module.CLAPModelModule
+
+model:
+  audio:
+    ckpt_path: ckpts/CLAP/630k-audioset-fusion-best.pt
+  text:
+    ckpt_path: ckpts/CLAP/630k-audioset-fusion-best.pt
+
+task: zero-shot-classification
+
+compile: False

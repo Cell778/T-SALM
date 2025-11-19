@@ -1,0 +1,25 @@
+# @package _global_
+
+defaults:
+  - override /data: default-spatial-all.yaml 
+  - _self_
+
+datamodule:
+  _target_: data.datamodule.DataModule
+
+modelmodule:
+  _target_: model.model_module.sCLAPModelModule
+
+model:
+  audio:
+    seld_method: ACCDOA
+    # ckpt_path: ckpts/HTSAT-fullset-imagenet-tiny-map=0.467.ckpt
+    # ckpt_path: ckpts/ACCDOA-HTSAT-0.566.ckpt
+    ckpt_path: ckpts/CLAP/630k-audioset-best.pt
+  text:
+    ckpt_path: ckpts/CLAP/630k-audioset-best.pt
+  loss_weights: [1.0, 0.]
+
+trainer:
+  max_epochs: 10
+task: spatial-retrieval

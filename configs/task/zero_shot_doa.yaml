@@ -1,0 +1,30 @@
+# @package _global_
+
+defaults:
+  - override /data: default-spatial.yaml
+  - _self_
+
+datamodule:
+  _target_: data.datamodule.DataModule
+
+modelmodule:
+  _target_: model.model_module.sCLAPModelModule
+
+model:
+  batch_size: 80
+  audio:
+    seld_method: EINV2
+    ckpt_path: # [seld_path, clap_path]
+      - ckpts/EINV2-HTSAT-0.514.ckpt
+      - ckpts/CLAP/630k-audioset-best.pt
+  text:
+    ckpt_path: ckpts/CLAP/630k-audioset-best.pt
+
+ckpt_path: ???
+
+task: zero-shot-classification (Direction)
+mode: test
+
+doa_feature_type: 1 # 0 for all_audio_features, 1 for sed_audio_features, -1 for doa_audio_features
+
+compile: False

@@ -1,0 +1,26 @@
+# @package _global_
+
+defaults:
+  - override /data: default.yaml 
+  - _self_
+
+datamodule:
+  _target_: data.datamodule.DataModule
+
+modelmodule:
+  _target_: model.model_module.sCLAPModelModule
+
+data:
+  sample_rate: 24000
+  hoplen: 240
+model:
+  audio:
+    seld_method: EINV2
+    ckpt_path: # [seld_path, clap_path]
+      - ckpts/EINV2-HTSAT-0.514.ckpt
+      - ckpts/CLAP/630k-audioset-fusion-best.pt
+      # - null
+  text:
+    ckpt_path: ckpts/CLAP/630k-audioset-fusion-best.pt
+
+task: semantic_retrieval
