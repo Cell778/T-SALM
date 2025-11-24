@@ -1,8 +1,7 @@
 # @package _global_
-
 defaults:
   - override /data: default-spatial-all.yaml
-  - override /task: spatial_retrieval
+  - override /task: zero_shot_doa
   - _self_
 
 datamodule:
@@ -15,13 +14,13 @@ model:
   batch_size: 64
   audio:
     seld_method: EINV2
-    ckpt_path: # [seld_path, clap_path]
+    ckpt_path:
       - ckpts/EINV2-HTSAT-0.514.ckpt
-      # - ckpts/mACCDOA-HTSAT-0.567.ckpt
       - ckpts/CLAP/630k-audioset-best.pt
   text:
     ckpt_path: ckpts/CLAP/630k-audioset-best.pt
   loss_weights: [1.0, 0.5]
 
+doa_feature_type: 2
 trainer:
   max_epochs: 10
