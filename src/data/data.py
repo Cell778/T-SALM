@@ -1,6 +1,7 @@
 import json
 import numpy as np
 import random
+import ast
 
 import torch
 import torchaudio
@@ -195,7 +196,10 @@ class sCLAPDataset(BaseDataset):
             # spatialized_caption = ['north'] * 5 # default spatialized caption
             caption = metadata['caption']
             azi, ele = metadata['azi'], metadata['ele']
-            azi, ele = torch.deg2rad(torch.tensor(azi)), torch.deg2rad(torch.tensor(ele))
+            azi_f = _to_angle(azi)
+            ele_f = _to_angle(ele)
+            azi = torch.deg2rad(torch.tensor(azi_f, dtype=torch.float32))
+            ele = torch.deg2rad(torch.tensor(ele_f, dtype=torch.float32))
             x, y, z = torch.cos(ele) * torch.cos(azi), torch.cos(ele) * torch.sin(azi), torch.sin(ele)
             direction = metadata['direction']
             # direction = 'The sound is coming from the east.' # default direction
@@ -239,3 +243,20 @@ class sCLAPDataset(BaseDataset):
             'longer': longer,
         }
         return sample
+
+def _to_angle(v):
+    if isinstance(v, str):
+        s = v.strip()
+        if s == '':
+            return 0.0
+        try:
+            return float(s)
+        except ValueError:
+            try:
+                obj = ast.literal_eval(s)
+                if isinstance(obj, (list, tuple)):
+                    return float(obj[0])
+                return float(obj)
+            except Exception:
+                raise ValueError(f"无效角度值: {v}")
+    return float(v)

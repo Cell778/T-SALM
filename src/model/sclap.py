@@ -1,5 +1,5 @@
 import math
-
+import numpy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,6 +8,8 @@ from transformers import RobertaModel
 from .component.model_utilities import MLPLayers
 from .component.seld import EINV2_HTSAT
 from .component.htsat import HTSAT_Swin_Transformer
+
+torch.serialization.add_safe_globals([numpy.core.multiarray.scalar])
 
 
 class sCLAP(nn.Module):
@@ -303,7 +305,7 @@ class sCLAP_Dual(sCLAP):
 
         return [audio_embedding, text_embedding, doa]
     
-    def load_pretrained_weights(self, seld_path, audio_path, text_path=None):
+    def load_pretrained_weights(self, audio_path1, audio_path2, text_path):
         """Load the pretrained weights for the audio and text encoder
 
         Parameters
@@ -315,16 +317,16 @@ class sCLAP_Dual(sCLAP):
         seld_path: str
             the path to the PSELDNets pretrained weights
         """
-        if audio_path is None and seld_path is None:
+        if audio_path1 is None and audio_path2 is None:
             return
 
         all_keys = list(self.state_dict().keys())
         # Load pseldnets-EINV2 first 
-        if seld_path and 'EINV2' in seld_path:
-            ckpt = torch.load(seld_path, map_location='cpu')['state_dict']
+        if audio_path1 and 'EINV2' in audio_path1:
+            ckpt = torch.load(audio_path1, map_location='cpu')['state_dict']
             ckpt = {k.replace('net.', ''): v for k, v in ckpt.items()}
             ckpt = {k.replace('_orig_mod.', ''): v for k, v in ckpt.items()} # if compiling the model
-            print('Loading PSELDNets pretrained weights from ', seld_path)
+            print('Loading PSELDNets pretrained weights from ', audio_path1)
             for k, v in self.audio_branch.state_dict().items():
                 if k == 'sed_encoder.patch_embed.proj.weight':
                     if 'audio_branch.' + k in all_keys: 
@@ -341,11 +343,11 @@ class sCLAP_Dual(sCLAP):
                 if 'audio_scalar.' + k in all_keys: 
                     all_keys.remove('audio_scalar.' + k)
                 v.data.copy_(ckpt['scalar.' + k])
-        elif seld_path and 'ACCDOA' in seld_path:
-            ckpt = torch.load(seld_path, map_location='cpu')['state_dict']
+        elif audio_path2 and 'ACCDOA' in audio_path2:
+            ckpt = torch.load(audio_path2, map_location='cpu')['state_dict']
             ckpt = {k.replace('net.', ''): v for k, v in ckpt.items()}
             ckpt = {k.replace('_orig_mod.', ''): v for k, v in ckpt.items()} # if compiling the model
-            print('Loading PSELDNets pretrained weights from ', seld_path)
+            print('Loading PSELDNets pretrained weights from ', audio_path2)
             for k, v in self.audio_branch.state_dict().items():
                 if 'sed_encoder' in k: continue
                 elif any([x in k for x in ['mel_conv2d', 'fusion_model']]): 
@@ -360,9 +362,9 @@ class sCLAP_Dual(sCLAP):
                 v.data.copy_(ckpt['scalar.' + k])
 
         # Load the audio encoder from clap
-        if audio_path and '630k-' in audio_path:
-            print('Loading LAION-CLAP audio encoder from {}'.format(audio_path))
-            ckpt = torch.load(audio_path, map_location='cpu')['state_dict']
+        if audio_path1 and '630k-' in audio_path1:
+            print('Loading LAION-CLAP audio encoder from {}'.format(audio_path1))
+            ckpt = torch.load(audio_path1, map_location='cpu')['state_dict']
             ckpt = {k.replace('module.', ''): v for k, v in ckpt.items()}
             self.logit_scale.data.copy_(ckpt['logit_scale_a'])
             all_keys.remove('logit_scale')
@@ -385,13 +387,13 @@ class sCLAP_Dual(sCLAP):
                 if k in ckpt and 'audio_projection' not in k:
                     if k in all_keys: all_keys.remove(k)
                     v.data.copy_(ckpt[k])
-        else: ValueError('Unknown audio encoder checkpoint: {}'.format(audio_path))
+        else: ValueError('Unknown audio encoder checkpoint: {}'.format(audio_path1))
 
         for key in all_keys:
             # if 'text_branch' in key: continue
             print(f'{key} not loaded.')
 
         if text_path is None: return
-        if audio_path and '630k-' in text_path:
+        if audio_path1 and '630k-' in text_path:
             print('Loading LAION-CLAP text encoder from {}'.format(text_path))
         else: ValueError('Unknown text encoder checkpoint: {}'.format(text_path))
