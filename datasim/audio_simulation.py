@@ -23,9 +23,10 @@ reg_type_dict = {
     'open': 'soft',
     'rigid': 'hard'
     }
-matlab_dir = '/home/hjb/workspace/Spatial-CLAP/datasim/dependencies'
-material_database = '/home/hjb/workspace/Spatial-CLAP/datasets/material_absorption'
-tau_srir_db = '/home/hjb/workspace/Spatial-CLAP/datasets/TAU-SRIR_DB/TAU-SRIR_DB'
+matlab_dir = '/Users/cellren/Desktop/XJTLU/SALM/Spatial-ALM/datasim/dependencies'
+material_database = '/Users/cellren/Desktop/XJTLU/SALM/Spatial-ALM/datasets/material_absorption'
+tau_srir_db = '/Users/cellren/Desktop/datasets/TAU-SRIR_DB/TAU-SRIR_DB'
+
 # tau_srir_db = '/home/hjb/workspace/Spatial-CLAP/TAU-SRIR_DB'
 
 # room_paths = ['01_bomb_shelter', '02_gym', '03_pb132', '04_pc226', '05_sa203',
@@ -461,9 +462,13 @@ if __name__ == '__main__':
                 
         print(f'{idx}: {fname}.wav')
 
-    process_map(generate_spatial_audio, range(len(audiofiles)), 
-                max_workers=args.num_workers, 
-                chunksize=args.chunksize)
+    # process_map(generate_spatial_audio, range(len(audiofiles)), 
+    #             max_workers=args.num_workers, 
+    #             chunksize=args.chunksize)
+    
+    from tqdm import tqdm
+    for idx in tqdm(range(len(audiofiles)), desc=f"Processing {dataset_name} {dataset_type}"):
+        generate_spatial_audio(idx)
 
 
 
