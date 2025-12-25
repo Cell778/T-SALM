@@ -192,18 +192,67 @@ class sCLAPDataset(BaseDataset):
             metafile = str(audiofile).replace('/audio/', '/metadata/').replace('.flac', '.json')
             with open(metafile, 'r') as f:
                 metadata = json.load(f)
-            spatialized_caption = metadata['spatialized_caption']
-            # spatialized_caption = ['north'] * 5 # default spatialized caption
-            caption = metadata['caption']
-            azi, ele = metadata['azi'], metadata['ele']
+
+            # stClotho compatibility (must have temporal_spatial_caption)
+            if isinstance(metadata, dict) and 'audio_segments' in metadata:
+                temporal_spatial_caption = metadata.get('temporal_spatial_caption', None)
+                if temporal_spatial_caption is None:
+                    raise KeyError(f"Missing temporal_spatial_caption in {metafile}")
+                if not isinstance(temporal_spatial_caption, list) or len(temporal_spatial_caption) == 0:
+                    raise KeyError(f"Invalid temporal_spatial_caption in {metafile}")
+
+                segments = metadata.get('audio_segments', [])
+                if not isinstance(segments, list) or len(segments) == 0:
+                    raise KeyError(f"Invalid audio_segments in {metafile}")
+
+                # Build a semantic temporal caption from the ORIGINAL (non-spatial) captions
+                # Keep i-to-i pairing to preserve the "5 captions -> 5 captions" design.
+                if len(segments) < 2:
+                    raise KeyError(f"Need >=2 audio_segments in {metafile}")
+                seg0_meta = segments[0].get('metadata', {})
+                seg1_meta = segments[1].get('metadata', {})
+                c0 = seg0_meta.get('caption', None)
+                c1 = seg1_meta.get('caption', None)
+                if not isinstance(c0, list) or not isinstance(c1, list) or len(c0) == 0 or len(c1) == 0:
+                    raise KeyError(f"Missing/invalid caption list in audio_segments[0/1].metadata of {metafile}")
+
+                k = min(len(c0), len(c1), len(temporal_spatial_caption))
+                caption = []
+                for i in range(k):
+                    a = str(c0[i]).strip().rstrip('.!?')
+                    b = str(c1[i]).strip()
+                    out = f"{a}, then {b}"
+                    out = out.strip()
+                    if out and out[-1] not in '.!?':
+                        out += '.'
+                    caption.append(out)
+
+                spatialized_caption = temporal_spatial_caption
+
+                seg_idx = np.random.randint(0, len(segments)) if self.dataset_type == 'train' else 0
+                seg_meta = segments[seg_idx].get('metadata', {})
+
+                azi, ele = seg_meta.get('azi', None), seg_meta.get('ele', None)
+                direction = seg_meta.get('direction', None)
+                if azi is None or ele is None or direction is None:
+                    raise KeyError(f"Missing azi/ele/direction in audio_segments[{seg_idx}].metadata of {metafile}")
+
+            # original sClotho metadata format
+            else:
+                spatialized_caption = metadata['spatialized_caption']
+                caption = metadata['caption']
+                azi, ele = metadata['azi'], metadata['ele']
+                direction = metadata['direction']
+
+            # shared xyz computation
             azi_f = _to_angle(azi)
             ele_f = _to_angle(ele)
             azi = torch.deg2rad(torch.tensor(azi_f, dtype=torch.float32))
             ele = torch.deg2rad(torch.tensor(ele_f, dtype=torch.float32))
             x, y, z = torch.cos(ele) * torch.cos(azi), torch.cos(ele) * torch.sin(azi), torch.sin(ele)
-            direction = metadata['direction']
-            # direction = 'The sound is coming from the east.' # default direction
         # only use the first channel while evaluating the semantic ability (from semantic branch only)
+                
+
         elif self.dataset_name in ['Clotho', 'AudioCaps'] and self.dataset_type == 'test':
             if -22.5 < azi <= 22.5: direction = 'south'
             elif 22.5 < azi <= 67.5: direction = 'southeast'
