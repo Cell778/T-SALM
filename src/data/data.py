@@ -229,9 +229,32 @@ class sCLAPDataset(BaseDataset):
 
                 spatialized_caption = temporal_spatial_caption
 
+                # Determine number of events to supervise (default to 1 if not set)
+                n_events = getattr(self.cfg.model, 'n_events', 2)
+                if len(segments) < n_events:
+                    raise KeyError(f"Need >= {n_events} audio_segments in {metafile}")
+
+                # Build per-event Cartesian DOAs (n_events, 3)
+                cart_doa_list = []
+                for j in range(n_events):
+                    seg_j_meta = segments[j].get('metadata', {})
+                    azi_j, ele_j = seg_j_meta.get('azi', None), seg_j_meta.get('ele', None)
+                    direction_j = seg_j_meta.get('direction', None)
+                    if azi_j is None or ele_j is None or direction_j is None:
+                        raise KeyError(f"Missing azi/ele/direction in audio_segments[{j}].metadata of {metafile}")
+                    azi_f = _to_angle(azi_j)
+                    ele_f = _to_angle(ele_j)
+                    azi_t = torch.deg2rad(torch.tensor(azi_f, dtype=torch.float32))
+                    ele_t = torch.deg2rad(torch.tensor(ele_f, dtype=torch.float32))
+                    xj = torch.cos(ele_t) * torch.cos(azi_t)
+                    yj = torch.cos(ele_t) * torch.sin(azi_t)
+                    zj = torch.sin(ele_t)
+                    cart_doa_list.append(torch.stack([xj, yj, zj]))
+                cart_doa = torch.stack(cart_doa_list, dim=0)
+
+                # Keep a single cls_doa for compatibility (use one random/first segment)
                 seg_idx = np.random.randint(0, len(segments)) if self.dataset_type == 'train' else 0
                 seg_meta = segments[seg_idx].get('metadata', {})
-
                 azi, ele = seg_meta.get('azi', None), seg_meta.get('ele', None)
                 direction = seg_meta.get('direction', None)
                 if azi is None or ele is None or direction is None:
@@ -244,7 +267,7 @@ class sCLAPDataset(BaseDataset):
                 azi, ele = metadata['azi'], metadata['ele']
                 direction = metadata['direction']
 
-            # shared xyz computation
+            # shared xyz computation (for compatibility/cls_doa)
             azi_f = _to_angle(azi)
             ele_f = _to_angle(ele)
             azi = torch.deg2rad(torch.tensor(azi_f, dtype=torch.float32))
@@ -288,7 +311,7 @@ class sCLAPDataset(BaseDataset):
             'text_comb': text_comb,
             'text_sed': text,
             'cls_doa': self.direction_label_dict[direction],
-            'cart_doa': torch.tensor([x, y, z]),
+            'cart_doa': cart_doa,
             'longer': longer,
         }
         return sample

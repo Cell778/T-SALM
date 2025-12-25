@@ -13,6 +13,7 @@ modelmodule:
 
 model:
   batch_size: 64
+  n_events: 2
   audio:
     seld_method: EINV2
     ckpt_path: # [seld_path, clap_path]

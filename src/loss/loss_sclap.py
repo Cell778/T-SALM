@@ -16,7 +16,15 @@ class sCLAPLoss:
         else: weights = self.weights
         # pred_doa, gt_doa, cls_doa = doa
         pred_doa, gt_doa = doa
-        loss_doa = (1 - F.cosine_similarity(pred_doa, gt_doa)).mean()
+        # Support multi-event DOA shapes: pred_doa (B, n_events, 3),
+        # gt_doa can be (B, n_events, 3) or legacy (B, 3).
+        if pred_doa.dim() == 3 and gt_doa.dim() == 2:
+            gt_doa = gt_doa.unsqueeze(1).expand(-1, pred_doa.size(1), -1)
+        elif pred_doa.dim() == 2 and gt_doa.dim() == 3:
+            pred_doa = pred_doa.unsqueeze(1).expand_as(gt_doa)
+        # compute cosine similarity over last dim, average over events and batch
+        cos_sim = F.cosine_similarity(pred_doa, gt_doa, dim=-1)
+        loss_doa = (1 - cos_sim).mean()
         
         device = audio_features[0].device
         audio_feature_comb, audio_feature_sed, audio_feature_doa = audio_features

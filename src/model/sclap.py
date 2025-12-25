@@ -20,6 +20,7 @@ class sCLAP(nn.Module):
         self.sed_in_ch, self.doa_in_ch = 1, 7
 
         self.cfg = cfg
+        self.n_events = getattr(cfg.model, 'n_events', 1)
         self.enable_fusion = cfg.model.fusion.enable
         self.fusion_type = cfg.model.fusion.type
         self.audio_backbone = cfg.model.audio.backbone
@@ -38,7 +39,7 @@ class sCLAP(nn.Module):
         self.fc_doa = nn.Sequential(
             nn.Linear(joint_embed_dim, joint_embed_dim),
             self.mlp_act(),
-            nn.Linear(joint_embed_dim, 3),
+            nn.Linear(joint_embed_dim, 3 * self.n_events),
             nn.Tanh()
         )
 
@@ -154,6 +155,9 @@ class sCLAP_Single(sCLAP):
         audio_embedding = self.get_audio_embedding(audio, longer_list)
         text_embedding = self.get_text_embedding(text)
         doa = self.fc_doa(audio_embedding[-1])
+        if doa.dim() == 2:
+            b = doa.shape[0]
+            doa = doa.view(b, self.n_events, 3)
 
         return [audio_embedding, text_embedding, doa]
     
@@ -302,6 +306,9 @@ class sCLAP_Dual(sCLAP):
         audio_embedding = self.get_audio_embedding(audio, longer_list)
         text_embedding = self.get_text_embedding(text)
         doa = self.fc_doa(audio_embedding[-1])
+        if doa.dim() == 2:
+            b = doa.shape[0]
+            doa = doa.view(b, self.n_events, 3)
 
         return [audio_embedding, text_embedding, doa]
     
