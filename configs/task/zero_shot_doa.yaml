@@ -22,7 +22,7 @@ model:
 
 ckpt_path: ???
 
-task: zero-shot-classification (Direction)
+task: "zero-shot-classification (Direction)"
 mode: test
 
 doa_feature_type: 1 # 0 for all_audio_features, 1 for sed_audio_features, -1 for doa_audio_features

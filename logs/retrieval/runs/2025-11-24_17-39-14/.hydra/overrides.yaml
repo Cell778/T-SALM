@@ -1,0 +1,15 @@
+- data=default-spatial-sAudioCaps
+- paths.dataset_dir=datasets
+- trainer.max_epochs=10
+- trainer.accelerator=gpu
+- trainer.devices=1
+- trainer.precision=32
+- num_workers=8
+- model.batch_size=16
+- +optimizer.kwargs.lr=1e-6
+- +optimizer.kwargs.weight_decay=1e-4
+- model.audio.ckpt_path=ckpts/CLAP/630k-audioset-fusion-best.pt
+- model.text.ckpt_path=ckpts/CLAP/630k-audioset-fusion-best.pt
+- model.fusion.enable=true
+- data.truncation=fusion
+- compile=false

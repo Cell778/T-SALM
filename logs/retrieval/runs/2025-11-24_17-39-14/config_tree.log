@@ -1,0 +1,159 @@
+CONFIG
+├── data
+│   └── truncation: fusion                                                                                       
+│       data_filling: repeatpad                                                                                  
+│       sample_rate: 24000                                                                                       
+│       nfft: 1024                                                                                               
+│       n_mels: 64                                                                                               
+│       hoplen: 240                                                                                              
+│       window: hann                                                                                             
+│       chunklen_sec: 10                                                                                         
+│       train_dataset:                                                                                           
+│         sClotho:                                                                                               
+│         - train                                                                                                
+│         sAudioCaps:                                                                                            
+│         - train                                                                                                
+│       valid_dataset:                                                                                           
+│         sClotho:                                                                                               
+│         - valid                                                                                                
+│         sAudioCaps:                                                                                            
+│         - valid                                                                                                
+│       test_dataset:                                                                                            
+│         sAudioCaps:                                                                                            
+│         - test                                                                                                 
+│                                                                                                                
+├── model
+│   └── audio:                                                                                                   
+│         backbone: HTSAT                                                                                        
+│         ckpt_path: ckpts/CLAP/630k-audioset-fusion-best.pt                                                     
+│         output_dim: 768                                                                                        
+│         kwargs:                                                                                                
+│           spec_size: 256                                                                                       
+│           patch_size: 4                                                                                        
+│           patch_stride:                                                                                        
+│           - 4                                                                                                  
+│           - 4                                                                                                  
+│           embed_dim: 96                                                                                        
+│           depths:                                                                                              
+│           - 2                                                                                                  
+│           - 2                                                                                                  
+│           - 6                                                                                                  
+│           - 2                                                                                                  
+│           num_heads:                                                                                           
+│           - 4                                                                                                  
+│           - 8                                                                                                  
+│           - 16                                                                                                 
+│           - 32                                                                                                 
+│           window_size: 8                                                                                       
+│           mlp_ratio: 4                                                                                         
+│           qkv_bias: true                                                                                       
+│           drop_rate: 0.0                                                                                       
+│           attn_drop_rate: 0.0                                                                                  
+│           drop_path_rate: 0.1                                                                                  
+│           ape: false                                                                                           
+│           patch_norm: true                                                                                     
+│           norm_before_mlp: ln                                                                                  
+│       text:                                                                                                    
+│         backbone: roberta                                                                                      
+│         ckpt_path: ckpts/CLAP/630k-audioset-fusion-best.pt                                                     
+│       mlp_loss: false                                                                                          
+│       loss_weights:                                                                                            
+│       - 1.0                                                                                                    
+│       - 0.0                                                                                                    
+│       fusion:                                                                                                  
+│         enable: true                                                                                           
+│         type: aff_2d                                                                                           
+│       batch_size: 16                                                                                           
+│       optimizer:                                                                                               
+│         method: Adam                                                                                           
+│         kwargs:                                                                                                
+│           lr: 0.0001                                                                                           
+│           betas:                                                                                               
+│           - 0.9                                                                                                
+│           - 0.999                                                                                              
+│           eps: 1.0e-08                                                                                         
+│           momentum: null                                                                                       
+│       lr_scheduler:                                                                                            
+│         method: cosinelr                                                                                       
+│         warmup_epochs: 3                                                                                       
+│                                                                                                                
+├── callbacks
+│   └── model_checkpoint:                                                                                        
+│         _target_: lightning.pytorch.callbacks.ModelCheckpoint                                                  
+│         dirpath: /Users/cellren/Desktop/XJTLU/SALM/Spatial-ALM/logs/retrieval/runs/2025-11-24_17-39-14/checkpoi
+│         filename: epoch_{epoch:03d}                                                                            
+│         monitor: train/total_loss                                                                              
+│         verbose: false                                                                                         
+│         save_last: true                                                                                        
+│         save_top_k: 1                                                                                          
+│         mode: min                                                                                              
+│         auto_insert_metric_name: false                                                                         
+│         save_weights_only: false                                                                               
+│         every_n_train_steps: null                                                                              
+│         train_time_interval: null                                                                              
+│         every_n_epochs: null                                                                                   
+│         save_on_train_epoch_end: null                                                                          
+│       early_stopping:                                                                                          
+│         monitor: train/total_loss                                                                              
+│         patience: 100                                                                                          
+│         mode: min                                                                                              
+│       model_summary:                                                                                           
+│         max_depth: -1                                                                                          
+│                                                                                                                
+├── logger
+│   └── tensorboard:                                                                                             
+│         _target_: lightning.pytorch.loggers.tensorboard.TensorBoardLogger                                      
+│         save_dir: /Users/cellren/Desktop/XJTLU/SALM/Spatial-ALM/logs/retrieval/runs/2025-11-24_17-39-14/tensorb
+│         name: null                                                                                             
+│         log_graph: false                                                                                       
+│         default_hp_metric: true                                                                                
+│         prefix: ''                                                                                             
+│                                                                                                                
+├── trainer
+│   └── _target_: lightning.pytorch.trainer.Trainer                                                              
+│       default_root_dir: /Users/cellren/Desktop/XJTLU/SALM/Spatial-ALM/logs/retrieval/runs/2025-11-24_17-39-14  
+│       min_epochs: 1                                                                                            
+│       max_epochs: 10                                                                                           
+│       accelerator: gpu                                                                                         
+│       devices: 1                                                                                               
+│       precision: 32                                                                                            
+│       check_val_every_n_epoch: 1                                                                               
+│       num_sanity_val_steps: 0                                                                                  
+│       deterministic: false                                                                                     
+│       gradient_clip_val: 1.0                                                                                   
+│                                                                                                                
+├── paths
+│   └── workspace_dir: ./                                                                                        
+│       dataset_dir: datasets                                                                                    
+│       log_dir: ./logs/                                                                                         
+│       output_dir: /Users/cellren/Desktop/XJTLU/SALM/Spatial-ALM/logs/retrieval/runs/2025-11-24_17-39-14        
+│                                                                                                                
+├── extras
+│   └── ignore_warnings: false                                                                                   
+│       print_config: true                                                                                       
+│                                                                                                                
+├── task_name
+│   └── retrieval                                                                                                
+├── experiment_name
+│   └── 2025-11-24_17-39-14                                                                                      
+├── num_workers
+│   └── 8                                                                                                        
+├── ckpt_path
+│   └── None                                                                                                     
+├── seed
+│   └── 2025                                                                                                     
+├── compile
+│   └── False                                                                                                    
+├── datamodule
+│   └── _target_: data.datamodule.DataModule                                                                     
+│                                                                                                                
+├── modelmodule
+│   └── _target_: model.model_module.CLAPModelModule                                                             
+│                                                                                                                
+├── task
+│   └── retrieval                                                                                                
+└── optimizer
+    └── kwargs:                                                                                                  
+          lr: 1.0e-06                                                                                            
+          weight_decay: 0.0001                                                                                   
+                                                                                                                 

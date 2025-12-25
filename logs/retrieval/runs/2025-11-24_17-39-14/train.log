@@ -1,0 +1,15 @@
+[2025-11-24 17:39:14,107][utils.utilities][INFO] - Printing config tree with Rich! <cfg.extras.print_config=True>
+[2025-11-24 17:39:14,129][__main__][INFO] - Instantiating datamodule <data.datamodule.DataModule> ...
+[2025-11-24 17:39:15,835][data.datamodule][INFO] - Training clip number of sClotho is: 0
+[2025-11-24 17:39:17,260][data.datamodule][INFO] - Training clip number of sAudioCaps is: 12347
+[2025-11-24 17:39:17,260][data.datamodule][INFO] - Training clip number is: 12347
+[2025-11-24 17:39:18,627][data.datamodule][INFO] - Validation clip number of sClotho is: 0
+[2025-11-24 17:39:19,601][data.datamodule][INFO] - Validation clip number of sAudioCaps is: 496
+[2025-11-24 17:39:19,601][__main__][INFO] - Instantiating model <model.model_module.CLAPModelModule> ...
+[2025-11-24 17:39:19,629][__main__][INFO] - Instantiating callbacks...
+[2025-11-24 17:39:19,630][utils.utilities][INFO] - Instantiating callback <lightning.pytorch.callbacks.ModelCheckpoint>
+[2025-11-24 17:39:19,641][__main__][INFO] - Instantiating loggers...
+[2025-11-24 17:39:19,641][utils.utilities][INFO] - Instantiating logger <lightning.pytorch.loggers.tensorboard.TensorBoardLogger>
+[2025-11-24 17:39:19,643][__main__][INFO] - Instantiating trainer <lightning.pytorch.trainer.Trainer>
+[2025-11-24 17:39:19,682][__main__][INFO] - Logging hyperparameters!
+[2025-11-24 17:39:19,743][__main__][INFO] - Starting training!
