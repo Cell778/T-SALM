@@ -301,6 +301,21 @@ class sCLAPModelModule(BaseModelModule):
                 self.instructions.update(json.load(f))
 
     def validation_step(self, batch_sample, batch_idx, dataloader_idx=0):
+        # Triplet batches from stClotho: (B,3,C,T) -> (B*3,C,T)
+        if batch_sample['audio4sed'].dim() == 4:
+            batch_sample['audio4sed'] = batch_sample['audio4sed'].flatten(0, 1)
+            batch_sample['audio4doa'] = batch_sample['audio4doa'].flatten(0, 1)
+            batch_sample['longer'] = batch_sample['longer'].flatten(0, 1)
+            if 'cart_doa' in batch_sample:
+                batch_sample['cart_doa'] = batch_sample['cart_doa'].flatten(0, 1)
+
+            for key in ['text_sed', 'text_comb']:
+                if key in batch_sample:
+                    for k in batch_sample[key].keys():
+                        # e.g. (B,3,L) or (B,3,K,L) -> (B*3,L) or (B*3,K,L)
+                        if batch_sample[key][k].dim() >= 3:
+                            batch_sample[key][k] = batch_sample[key][k].flatten(0, 1)
+
         EDIT = self.cfg.get('edit', False)
         if self.last_dataloader_idx != dataloader_idx:
             dataset_name = self.valid_dataset_names[self.last_dataloader_idx]
@@ -346,6 +361,20 @@ class sCLAPModelModule(BaseModelModule):
         else: raise NotImplementedError            
 
     def test_step(self, batch_sample, batch_idx):
+        # Triplet batches from stClotho: (B,3,C,T) -> (B*3,C,T)
+        if batch_sample['audio4sed'].dim() == 4:
+            batch_sample['audio4sed'] = batch_sample['audio4sed'].flatten(0, 1)
+            batch_sample['audio4doa'] = batch_sample['audio4doa'].flatten(0, 1)
+            batch_sample['longer'] = batch_sample['longer'].flatten(0, 1)
+            if 'cart_doa' in batch_sample:
+                batch_sample['cart_doa'] = batch_sample['cart_doa'].flatten(0, 1)
+
+            for key in ['text_sed', 'text_comb']:
+                if key in batch_sample:
+                    for k in batch_sample[key].keys():
+                        if batch_sample[key][k].dim() >= 3:
+                            batch_sample[key][k] = batch_sample[key][k].flatten(0, 1)
+
         audio = {'audio4sed': batch_sample['audio4sed'], 
                 'audio4doa': batch_sample['audio4doa']}
         longer = batch_sample['longer']

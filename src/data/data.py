@@ -325,8 +325,9 @@ class sCLAPDataset(BaseDataset):
                     metafile = str(metaitem)
                 caption, spatialized_caption, direction, cart_doa = _parse_caption_and_doa(metafile)
             else:
+                # Triplet: each audio reads its OWN metadata json.
                 if isinstance(metaitem, (tuple, list)) and len(metaitem) == 3:
-                    meta_paths = [str(m) for m in metaitem]
+                    meta_paths = [str(p) for p in metaitem]
                 else:
                     meta_paths = [
                         str(pos_path).replace('/audio/', '/metadata/').replace('.flac', '.json'),
@@ -334,7 +335,7 @@ class sCLAPDataset(BaseDataset):
                         str(neg_s_path).replace('/audio/', '/metadata/').replace('.flac', '.json'),
                     ]
 
-                parsed = [_parse_caption_and_doa(mp) for mp in meta_paths]
+                parsed = [_parse_caption_and_doa(p) for p in meta_paths]
                 captions = [p[0] for p in parsed]
                 spatial_caps = [p[1] for p in parsed]
                 directions = [p[2] for p in parsed]
