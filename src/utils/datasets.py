@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import pandas as pd
+import re
 
 class BaseDataset:
     """Base dataset."""
@@ -135,7 +136,7 @@ class sAudioCaps(BaseDataset):
     def __init__(self, cfg=None, root_dir='datasets', **kwargs):
         super().__init__(cfg, root_dir)
         dataset_name = kwargs['dataset_name'][1:]
-        self.path = self.path / 'temporal_spatial_audio_text' / dataset_name
+        self.path = self.path / 'spatial_audio_text' / dataset_name
 
         self.dataset['train'] = {
             'audio': sorted((self.path / 'audio/train').glob('*.flac')),
@@ -161,7 +162,7 @@ class sClotho(BaseDataset):
     def __init__(self, cfg=None, root_dir='datasets', **kwargs):
         super().__init__(cfg, root_dir)
         dataset_name = kwargs['dataset_name'][1:]
-        self.path = self.path / 'temporal_spatial_audio_text' / dataset_name
+        self.path = self.path / 'spatial_audio_text' / dataset_name
         print('sClotho:', self.path)
 
         self.dataset['train'] = {
@@ -181,6 +182,69 @@ class sClotho(BaseDataset):
             # 'metadata': [file for file in (self.path / 'metadata/test').glob('*.json') if '_0.json' in str(file)],
             # 'metadata': sorted((self.path / 'metadata_qwen3-8b/test').glob('*.json')),
         }
+    
+class stClotho(BaseDataset):
+    """spatial Clotho dataset with nested negative samples."""
+    def __init__(self, cfg=None, root_dir='datasets', **kwargs):
+        super().__init__(cfg, root_dir)
+        dataset_name = kwargs['dataset_name'][2:]
+        self.path = self.path / 'temporal_spatial_audio_text' / dataset_name
+        self.neg_path = self.path.parent / 'stClotho_negative'
+        print('stClotho:', self.path)
+        print('stClotho negative samples:', self.neg_path)
+
+        def _id_from_stem(stem: str):
+            # temporal_00000 / temporal_negative_00000 / spatial_negative_00000 -> 00000
+            m = re.search(r'(\d+)$', stem)
+            return m.group(1) if m else None
+
+        for split in ['train', 'valid', 'test']:
+            pos_audio_files = list((self.path / f'audio/{split}').glob('*.flac'))
+            pos_meta_files  = list((self.path / f'metadata/{split}').glob('*.json'))
+
+            neg_audio_files = list((self.neg_path / f'audio/{split}').rglob('*.flac'))
+            neg_meta_files  = list((self.neg_path / f'metadata/{split}').rglob('*.json'))
+
+            pos_audio = { _id_from_stem(p.stem): p for p in pos_audio_files }
+            pos_meta  = { _id_from_stem(p.stem): p for p in pos_meta_files }
+
+            neg_temporal_audio = {}
+            neg_spatial_audio  = {}
+            for p in neg_audio_files:
+                k = _id_from_stem(p.stem)
+                if k is None:
+                    continue
+                if p.stem.startswith('temporal_negative_'):
+                    neg_temporal_audio[k] = p
+                elif p.stem.startswith('spatial_negative_'):
+                    neg_spatial_audio[k] = p
+
+            neg_temporal_meta = {}
+            neg_spatial_meta  = {}
+            for p in neg_meta_files:
+                k = _id_from_stem(p.stem)
+                if k is None:
+                    continue
+                if p.stem.startswith('temporal_negative_'):
+                    neg_temporal_meta[k] = p
+                elif p.stem.startswith('spatial_negative_'):
+                    neg_spatial_meta[k] = p
+
+            keys = sorted(set(pos_audio) & set(pos_meta) &
+                          set(neg_temporal_audio) & set(neg_spatial_audio) &
+                          set(neg_temporal_meta) & set(neg_spatial_meta))
+
+            assert len(keys) > 0, f"No matched triplets found in split={split}"
+
+            audio_triplets = [(pos_audio[k], neg_temporal_audio[k], neg_spatial_audio[k]) for k in keys]
+            meta_triplets  = [(pos_meta[k],  neg_temporal_meta[k],  neg_spatial_meta[k])  for k in keys]
+
+            self.dataset[split] = {
+                'audio': audio_triplets,
+                'metadata': meta_triplets,
+            }
+
+
         
 
 class sFreesound(BaseDataset):

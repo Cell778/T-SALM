@@ -226,6 +226,17 @@ class sCLAPModelModule(BaseModelModule):
     ############################## Training functions ##############################
 
     def training_step(self, batch_sample, batch_idx):
+        if batch_sample['audio4sed'].dim() == 4:  # (B,3,C,T)
+            batch_sample['audio4sed'] = batch_sample['audio4sed'].flatten(0, 1)
+            batch_sample['audio4doa'] = batch_sample['audio4doa'].flatten(0, 1)
+            batch_sample['longer'] = batch_sample['longer'].flatten(0, 1)
+            batch_sample['cart_doa'] = batch_sample['cart_doa'].flatten(0, 1)
+
+            # text dict: (B,3,L) -> (B*3,L)
+            for key in ['text_sed', 'text_comb']:
+                for k in batch_sample[key].keys():
+                    batch_sample[key][k] = batch_sample[key][k].flatten(0, 1)
+
         audio = {'audio4sed': batch_sample['audio4sed'], 
                  'audio4doa': batch_sample['audio4doa']}
         text = {'text': batch_sample['text_sed'], 
@@ -499,4 +510,3 @@ class DOAModelModule(BaseModelModule):
         localization_error = torch.acos(cos_sim) * 180 / torch.pi
         localization_error = localization_error.mean().item()
         self.logging.info(f"Localization_error for {dataset_name}: {localization_error:.1f}\n")
-    

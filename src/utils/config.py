@@ -8,6 +8,7 @@ dataset_dict = {
     'ESC50': ESC50,
     'Freesound': Freesound,
     'sClotho': sClotho,
+    'stClotho': stClotho,
     'sClotho_ColRIR': sClotho,
     'sClotho_ColRIR_New': sClotho,
     'sAudioCaps': sAudioCaps,
