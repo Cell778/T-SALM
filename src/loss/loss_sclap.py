@@ -26,15 +26,23 @@ class sCLAPLoss:
         """
 
         weights_all = list(self.weights)
+        # Backward compatible parsing:
+        # - [w_doa] -> [w_doa, 0.0]
+        # - [w_doa, w_sem]
+        # - [w_doa, w_sem, w_temp]
         if len(weights_all) == 1:
             weights_all = [weights_all[0], 0.0]
-        if epoch_it < 3:
-            weights = [weights_all[0], 0.0]
-        else:
-            weights = weights_all
 
+        w_doa = weights_all[0]
+        w_sem = weights_all[1]
         # temporal loss weight: by default tie it to semantic weight for backward compat
-        temporal_weight = weights[2] if len(weights) >= 3 else weights[1]
+        w_temp = weights_all[2] if len(weights_all) >= 3 else w_sem
+
+        # warmup: disable semantic loss for the first 3 epochs, but keep temporal active
+        if epoch_it < 3:
+            w_sem_eff = 0.0
+        else:
+            w_sem_eff = w_sem
         # pred_doa, gt_doa, cls_doa = doa
         pred_doa, gt_doa = doa
         # Support multi-event DOA shapes: pred_doa (B, n_events, 3),
@@ -165,8 +173,8 @@ class sCLAPLoss:
             "loss_logit_temporal": loss_logit_temporal,
             # 'loss_logit_doa': loss_logit_doa,
             'loss_doa': loss_doa,
-            'total_loss': (1 - weights[1]) * loss_logit_spatial_semantic 
-                + weights[1] * loss_logit_semantic + weights[0] * loss_doa
-                + temporal_weight * loss_logit_temporal
+            'total_loss': (1 - w_sem_eff) * loss_logit_spatial_semantic 
+                + w_sem_eff * loss_logit_semantic + w_doa * loss_doa
+                + w_temp * loss_logit_temporal
 
         }
