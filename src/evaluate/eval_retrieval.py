@@ -11,6 +11,42 @@ def compute_angles(pred_doa, gt_doa):
     return angle
 
 
+def _doa_metrics_permutation_invariant_2events(pred_doa: torch.Tensor, gt_doa: torch.Tensor):
+    """Permutation-invariant DOA metrics for 2-event case.
+
+    Returns:
+        loss_doa: scalar tensor (1 - mean best cosine similarity)
+        le_deg: scalar tensor (mean best localization error in degrees)
+    """
+    # pred/gt: (N,2,3)
+    p0, p1 = pred_doa[:, 0, :], pred_doa[:, 1, :]
+    g0, g1 = gt_doa[:, 0, :], gt_doa[:, 1, :]
+
+    # cosine similarities (N,)
+    c00 = F.cosine_similarity(p0, g0, dim=-1)
+    c11 = F.cosine_similarity(p1, g1, dim=-1)
+    c01 = F.cosine_similarity(p0, g1, dim=-1)
+    c10 = F.cosine_similarity(p1, g0, dim=-1)
+
+    # average over events, then pick better assignment per sample
+    cos_no_swap = (c00 + c11) / 2
+    cos_swap = (c01 + c10) / 2
+    best_cos = torch.maximum(cos_no_swap, cos_swap)
+    loss_doa = 1 - best_cos.mean()
+
+    # angles in degrees (N,)
+    a00 = torch.acos(torch.clamp(c00, -1.0, 1.0)) * 180 / np.pi
+    a11 = torch.acos(torch.clamp(c11, -1.0, 1.0)) * 180 / np.pi
+    a01 = torch.acos(torch.clamp(c01, -1.0, 1.0)) * 180 / np.pi
+    a10 = torch.acos(torch.clamp(c10, -1.0, 1.0)) * 180 / np.pi
+
+    le_no_swap = (a00 + a11) / 2
+    le_swap = (a01 + a10) / 2
+    best_le = torch.minimum(le_no_swap, le_swap)
+    le_deg = best_le.mean()
+    return loss_doa, le_deg
+
+
 def evaluate(logging, sys_output, logit_scale, dataset_name, task='retrieval', new_idx=None):
     
     if task == 'retrieval':
@@ -45,8 +81,22 @@ def evaluate(logging, sys_output, logit_scale, dataset_name, task='retrieval', n
 
         pred_doa = sys_output['pred_doa'].float()
         gt_doa = sys_output['gt_doa'].float()
-        loss_doa = 1 - F.cosine_similarity(pred_doa, gt_doa).mean().item()
-        localization_error = compute_angles(pred_doa, gt_doa).mean().item()
+
+        # DOA metrics
+        # pred/gt may be (N,3) or (N,n_events,3). For n_events=2, use permutation-invariant matching.
+        if pred_doa.dim() == 3 and gt_doa.dim() == 2:
+            gt_doa = gt_doa.unsqueeze(1).expand(-1, pred_doa.size(1), -1)
+        elif pred_doa.dim() == 2 and gt_doa.dim() == 3:
+            pred_doa = pred_doa.unsqueeze(1).expand_as(gt_doa)
+
+        if pred_doa.dim() == 3 and gt_doa.dim() == 3 and pred_doa.size(1) == 2 and gt_doa.size(1) == 2:
+            loss_doa_t, le_t = _doa_metrics_permutation_invariant_2events(pred_doa, gt_doa)
+            loss_doa = float(loss_doa_t.item())
+            localization_error = float(le_t.item())
+        else:
+            # correct dim for cosine similarity: last dim is xyz
+            loss_doa = 1 - F.cosine_similarity(pred_doa, gt_doa, dim=-1).mean().item()
+            localization_error = compute_angles(pred_doa, gt_doa).mean().item()
         metrics['DOA'] = {'LE': localization_error, 'loss_doa': loss_doa}
         
     return metrics

@@ -157,7 +157,8 @@ class sCLAPModelModule(BaseModelModule):
             {'total_loss': MeanMetric(), 'loss_doa': MeanMetric(),
             'loss_logit_semantic': MeanMetric(), 
             # 'loss_logit_doa': MeanMetric(),
-            'loss_logit_spatial_semantic': MeanMetric(),}
+            'loss_logit_spatial_semantic': MeanMetric(),
+            'loss_logit_temporal': MeanMetric(),}
         )
     
     def setup(self, stage):
@@ -227,20 +228,25 @@ class sCLAPModelModule(BaseModelModule):
 
     def training_step(self, batch_sample, batch_idx):
         if batch_sample['audio4sed'].dim() == 4:  # (B,3,C,T)
+            # Triplet batches from stClotho
+            # - audio: flatten to candidates (B*3,...)
+            # - text_sed: keep ONLY positives as anchors (B,...) for temporal hard-negative mining
+            # - text_comb: keep flattened (B*3,...) so spatial negatives can be trained as ordinary samples
             batch_sample['audio4sed'] = batch_sample['audio4sed'].flatten(0, 1)
             batch_sample['audio4doa'] = batch_sample['audio4doa'].flatten(0, 1)
             batch_sample['longer'] = batch_sample['longer'].flatten(0, 1)
             batch_sample['cart_doa'] = batch_sample['cart_doa'].flatten(0, 1)
 
-            # text dict: (B,3,L) -> (B*3,L)
-            for key in ['text_sed', 'text_comb']:
-                for k in batch_sample[key].keys():
-                    batch_sample[key][k] = batch_sample[key][k].flatten(0, 1)
+            text_sed = {k: v[:, 0, ...] for k, v in batch_sample['text_sed'].items()}
+            text_comb = {k: v.flatten(0, 1) for k, v in batch_sample['text_comb'].items()}
+        else:
+            text_sed = batch_sample['text_sed']
+            text_comb = batch_sample['text_comb']
 
         audio = {'audio4sed': batch_sample['audio4sed'], 
                  'audio4doa': batch_sample['audio4doa']}
-        text = {'text': batch_sample['text_sed'], 
-                'text_comb': batch_sample['text_comb']}
+        text = {'text': text_sed,
+            'text_comb': text_comb}
         longer = batch_sample['longer']
         audio_features, text_features, doa = self.forward(audio, text, longer)
         # text_feature_doa = self.encode_direction_text()
