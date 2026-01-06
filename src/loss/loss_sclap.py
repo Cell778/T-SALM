@@ -157,12 +157,15 @@ class sCLAPLoss:
                 + F.cross_entropy(logits_t2a_sed, labels_pos)
             ) / 2
 
-            # temporal hard-negative loss (v2): anchor = positive text_sed, candidates = [pos, neg_t]
+            # temporal hard-negative loss (v2):
+            # anchor = positive text_comb (from temporal_spatial_caption / spatialized_caption)
+            # candidates = [pos, neg_t] audio_feature_comb
             # assume per-group order: [pos, neg_t, neg_s, ...]
             temporal_offsets = torch.tensor([0, 1], device=device, dtype=torch.long)  # pos, neg_t
             cand_idx = (pos_idx[:, None] + temporal_offsets[None, :]).reshape(-1)  # (2B,)
-            audio_sed_temporal_cands = audio_feature_sed[cand_idx]  # (2B, D)
-            logits_t2a_temp = logit_scale * (text_feature_sed @ audio_sed_temporal_cands.T)  # (B, 2B)
+            audio_temporal_cands = audio_feature_comb[cand_idx]  # (2B, D)
+            text_temporal_anchor = text_feature_comb[pos_idx]  # (B, D)
+            logits_t2a_temp = logit_scale * (text_temporal_anchor @ audio_temporal_cands.T)  # (B, 2B)
             labels_temp = torch.arange(b, device=device, dtype=torch.long) * 2
             loss_logit_temporal = F.cross_entropy(logits_t2a_temp, labels_temp)
         # loss_logit_doa = F.cross_entropy(logits_per_audio_doa, cls_doa)
