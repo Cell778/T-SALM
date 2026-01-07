@@ -162,7 +162,7 @@ class sClotho(BaseDataset):
     def __init__(self, cfg=None, root_dir='datasets', **kwargs):
         super().__init__(cfg, root_dir)
         dataset_name = kwargs['dataset_name'][1:]
-        self.path = self.path / 'spatial_audio_text' / dataset_name
+        self.path = self.path / 'temporal_spatial_audio_text' / dataset_name
         print('sClotho:', self.path)
 
         self.dataset['train'] = {

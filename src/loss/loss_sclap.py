@@ -38,11 +38,18 @@ class sCLAPLoss:
         # temporal loss weight: by default tie it to semantic weight for backward compat
         w_temp = weights_all[2] if len(weights_all) >= 3 else w_sem
 
-        # warmup: disable semantic loss for the first 3 epochs, but keep temporal active
-        if epoch_it < 3:
-            w_sem_eff = 0.0
+        # semantic weight: keep original hard switch (turn on from epoch 4, i.e., epoch_it>=3)
+        w_sem_eff = 0.0 if epoch_it < 3 else w_sem
+
+        # temporal weight: start smaller in early epochs, then ramp up to the configured final
+        # value (e.g., 0.5). This helps avoid early training instability from hard negatives.
+        temporal_ramp_epochs = 4
+        if temporal_ramp_epochs <= 1:
+            w_temp_eff = w_temp
         else:
-            w_sem_eff = w_sem
+            progress = float(epoch_it + 1) / float(temporal_ramp_epochs)
+            progress = max(0.0, min(1.0, progress))
+            w_temp_eff = w_temp * progress
         # pred_doa, gt_doa, cls_doa = doa
         pred_doa, gt_doa = doa
         # Support multi-event DOA shapes: pred_doa (B, n_events, 3),
@@ -125,7 +132,7 @@ class sCLAPLoss:
 
             labels_pos = torch.arange(b, device=device, dtype=torch.long)
 
-            # spatial loss: use pos + spatial-negative as ordinary samples (2B vs 2B)
+            # spatial loss: treat pos/neg_t/neg_s as ordinary samples (3B vs 3B)
             # assume per-group order: [pos, neg_t, neg_s, ...]
             assert g >= 3, f"spatial hard selection expects group size >=3, got {g}"
             if text_feature_comb.shape[0] != n:
@@ -134,11 +141,11 @@ class sCLAPLoss:
                     f"text_comb={text_feature_comb.shape[0]}, audio={n}. "
                     "Ensure training_step flattens text_comb to (B*G, ...)."
                 )
-            spatial_offsets = torch.tensor([0, 2], device=device, dtype=torch.long)  # pos, neg_s
-            spatial_idx = (pos_idx[:, None] + spatial_offsets[None, :]).reshape(-1)  # (2B,)
+            spatial_offsets = torch.tensor([0, 1, 2], device=device, dtype=torch.long)  # pos, neg_t, neg_s
+            spatial_idx = (pos_idx[:, None] + spatial_offsets[None, :]).reshape(-1)  # (3B,)
             audio_comb_spatial = audio_feature_comb[spatial_idx]
             text_comb_spatial = text_feature_comb[spatial_idx]
-            logits_per_audio_comb = logit_scale * (audio_comb_spatial @ text_comb_spatial.T)  # (2B, 2B)
+            logits_per_audio_comb = logit_scale * (audio_comb_spatial @ text_comb_spatial.T)  # (3B, 3B)
             logits_per_text_comb = logits_per_audio_comb.T
 
             num_logits = logits_per_audio_comb.shape[0]
@@ -158,13 +165,13 @@ class sCLAPLoss:
             ) / 2
 
             # temporal hard-negative loss (v2):
-            # anchor = positive text_comb (from temporal_spatial_caption / spatialized_caption)
-            # candidates = [pos, neg_t] audio_feature_comb
+            # anchor = positive text_sed (from temporal_spatial_caption / spatialized_caption)
+            # candidates = [pos, neg_t] audio_feature_sed
             # assume per-group order: [pos, neg_t, neg_s, ...]
             temporal_offsets = torch.tensor([0, 1], device=device, dtype=torch.long)  # pos, neg_t
             cand_idx = (pos_idx[:, None] + temporal_offsets[None, :]).reshape(-1)  # (2B,)
-            audio_temporal_cands = audio_feature_comb[cand_idx]  # (2B, D)
-            text_temporal_anchor = text_feature_comb[pos_idx]  # (B, D)
+            audio_temporal_cands = audio_feature_sed[cand_idx]  # (2B, D)
+            text_temporal_anchor = text_feature_sed[pos_idx]  # (B, D)
             logits_t2a_temp = logit_scale * (text_temporal_anchor @ audio_temporal_cands.T)  # (B, 2B)
             labels_temp = torch.arange(b, device=device, dtype=torch.long) * 2
             loss_logit_temporal = F.cross_entropy(logits_t2a_temp, labels_temp)
@@ -178,6 +185,6 @@ class sCLAPLoss:
             'loss_doa': loss_doa,
             'total_loss': (1 - w_sem_eff) * loss_logit_spatial_semantic 
                 + w_sem_eff * loss_logit_semantic + w_doa * loss_doa
-                + w_temp * loss_logit_temporal
+                + w_temp_eff * loss_logit_temporal
 
         }
