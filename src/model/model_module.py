@@ -227,7 +227,8 @@ class sCLAPModelModule(BaseModelModule):
     ############################## Training functions ##############################
 
     def training_step(self, batch_sample, batch_idx):
-        if batch_sample['audio4sed'].dim() == 4:  # (B,3,C,T)
+        is_triplet = (batch_sample['audio4sed'].dim() == 4)  # (B,3,C,T)
+        if  batch_sample['audio4sed'].dim() == 4:  # (B,3,C,T)
             # Triplet batches from stClotho
             # - audio: flatten to candidates (B*3,...)
             # - text_sed: keep ONLY positives as anchors (B,...) for temporal hard-negative mining
@@ -237,7 +238,7 @@ class sCLAPModelModule(BaseModelModule):
             batch_sample['longer'] = batch_sample['longer'].flatten(0, 1)
             batch_sample['cart_doa'] = batch_sample['cart_doa'].flatten(0, 1)
 
-            text_sed = {k: v[:, 0, ...] for k, v in batch_sample['text_sed'].items()}
+            text_sed = {k: v.flatten(0,1) for k, v in batch_sample['text_sed'].items()}
             text_comb = {k: v.flatten(0, 1) for k, v in batch_sample['text_comb'].items()}
         else:
             text_sed = batch_sample['text_sed']
@@ -271,7 +272,7 @@ class sCLAPModelModule(BaseModelModule):
         total_loss = self.loss(audio_features, text_features, 
                                self.net.logit_scale,
                                [doa, batch_sample['cart_doa']],
-                               epoch_it=self.current_epoch)
+                               epoch_it=self.current_epoch, is_triplet=is_triplet)
         for key, loss in total_loss.items():
             self.train_loss[key].update(loss)
         # return total_loss['loss_doa']

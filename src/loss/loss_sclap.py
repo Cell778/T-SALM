@@ -11,7 +11,7 @@ class sCLAPLoss:
         self.prev_num_logits = 0
         self.labels = {}
 
-    def __call__(self, audio_features, text_features, logit_scale, doa, epoch_it=0):
+    def __call__(self, audio_features, text_features, logit_scale, doa, epoch_it=0, is_triplet=False):
         """Compute training losses.
 
         Notes
@@ -20,7 +20,7 @@ class sCLAPLoss:
           symmetric cross-entropy on in-batch negatives.
         - Triplet mode (stClotho): audio has shape (B*3, D) while text is (B, D)
           (we keep only positive text as anchors). In this mode we:
-            * compute spatial/semantic losses on positives only (B vs B)
+            * compute spatial/semantic losses on all 3B samples(3B vs 3B)
             * compute temporal loss as hard-negative CE with candidates [pos, neg_t]
               per anchor text_sed (B vs 2B)
         """
@@ -84,10 +84,7 @@ class sCLAPLoss:
         
         if self.mlp_loss: raise NotImplementedError
 
-        triplet_mode = (
-            audio_feature_comb.shape[0] != text_feature_comb.shape[0]
-            or audio_feature_sed.shape[0] != text_feature_sed.shape[0]
-        )
+        triplet_mode = is_triplet 
 
         if not triplet_mode:
             logits_per_audio_comb = logit_scale * audio_feature_comb @ text_feature_comb.T  # (N, N)
@@ -123,9 +120,9 @@ class sCLAPLoss:
             # - text_comb is expected to be (B*G, D): ordinary samples for spatial contrastive training
             b = text_feature_sed.shape[0]
             n = audio_feature_comb.shape[0]
-            assert n % b == 0, f"triplet_mode expects N % B == 0, got N={n}, B={b}"
-            g = n // b
-            assert g >= 2, f"triplet_mode expects group size >=2, got {g}"
+            g = 3
+            assert n % g == 0, f"triplet_mode expects N % B == 0, got N={n}, B={b}"
+            b = n // g
 
             # indices of positives in flattened audio: 0, g, 2g, ...
             pos_idx = torch.arange(b, device=device, dtype=torch.long) * g
@@ -155,13 +152,15 @@ class sCLAPLoss:
                 + F.cross_entropy(logits_per_text_comb, labels_spatial)
             ) / 2
 
-            # semantic loss: keep positives only (B vs B)
-            audio_sed_pos = audio_feature_sed[pos_idx]
-            logits_a2t_sed = logit_scale * (audio_sed_pos @ text_feature_sed.T)  # (B, B)
+            # semantic loss: use all 3B samples
+            logits_a2t_sed = logit_scale * (audio_feature_sed @ text_feature_sed.T)  # (3B, 3B)
             logits_t2a_sed = logits_a2t_sed.T
+
+            num_logits_sed = logits_a2t_sed.shape[0]
+            labels_sematic = torch.arange(num_logits_sed, device=device, dtype=torch.long)
             loss_logit_semantic = (
-                F.cross_entropy(logits_a2t_sed, labels_pos)
-                + F.cross_entropy(logits_t2a_sed, labels_pos)
+                F.cross_entropy(logits_a2t_sed, labels_sematic)
+                + F.cross_entropy(logits_t2a_sed, labels_sematic)
             ) / 2
 
             # temporal hard-negative loss (v2):
