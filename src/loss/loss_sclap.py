@@ -18,7 +18,7 @@ class sCLAPLoss:
         -----
         - Standard mode: audio/text batch sizes match (N == N), uses CLIP-style
           symmetric cross-entropy on in-batch negatives.
-        - Triplet mode (stClotho): audio has shape (B*3, D) while text is (B, D)
+        - Triplet mode (stClotho): audio and text has shape (B*3, D)
           (we keep only positive text as anchors). In this mode we:
             * compute spatial/semantic losses on all 3B samples(3B vs 3B)
             * compute temporal loss as hard-negative CE with candidates [pos, neg_t]
@@ -115,9 +115,7 @@ class sCLAPLoss:
             # temporal loss (v2) is only meaningful in triplet mode
             loss_logit_temporal = torch.zeros((), device=device)
         else:
-            # Triplet mode: audio is (B*G, D)
-            # - text_sed is (B, D): positive anchors for temporal hard-negative mining
-            # - text_comb is expected to be (B*G, D): ordinary samples for spatial contrastive training
+
             b = text_feature_sed.shape[0]
             n = audio_feature_comb.shape[0]
             g = 3
@@ -153,7 +151,12 @@ class sCLAPLoss:
             ) / 2
 
             # semantic loss: use all 3B samples
-            logits_a2t_sed = logit_scale * (audio_feature_sed @ text_feature_sed.T)  # (3B, 3B)
+            if text_feature_sed.shape[0] != audio_feature_sed.shape[0]:
+                text_feature_sed_expanded = text_feature_sed.repeat_interleave(g, dim=0)
+            else:
+                text_feature_sed_expanded = text_feature_sed
+                
+            logits_a2t_sed = logit_scale * (audio_feature_sed @ text_feature_sed_expanded.T)  # (3B, 3B)
             logits_t2a_sed = logits_a2t_sed.T
 
             num_logits_sed = logits_a2t_sed.shape[0]
@@ -167,13 +170,17 @@ class sCLAPLoss:
             # anchor = positive text_sed (from temporal_spatial_caption / spatialized_caption)
             # candidates = [pos, neg_t] audio_feature_sed
             # assume per-group order: [pos, neg_t, neg_s, ...]
-            temporal_offsets = torch.tensor([0, 1], device=device, dtype=torch.long)  # pos, neg_t
-            cand_idx = (pos_idx[:, None] + temporal_offsets[None, :]).reshape(-1)  # (2B,)
-            audio_temporal_cands = audio_feature_sed[cand_idx]  # (2B, D)
-            text_temporal_anchor = text_feature_sed[pos_idx]  # (B, D)
-            logits_t2a_temp = logit_scale * (text_temporal_anchor @ audio_temporal_cands.T)  # (B, 2B)
-            labels_temp = torch.arange(b, device=device, dtype=torch.long) * 2
-            loss_logit_temporal = F.cross_entropy(logits_t2a_temp, labels_temp)
+            # cand_idx = (pos_idx[:, None] + temporal_offsets[None, :]).reshape(-1)  # (2B,)
+            neg_t_idx = pos_idx + 1  # negative temporal indices
+            audio_temporal_pos = audio_feature_comb[pos_idx]  # extract auido feature comb for pos and neg_t only
+            text_temporal_anchor = text_feature_comb[pos_idx]
+            audio_temporal_neg_t = audio_feature_comb[neg_t_idx]
+            sim_pos = torch.sum(text_temporal_anchor * audio_temporal_pos, dim=-1)
+            sim_neg_t = torch.sum(text_temporal_anchor * audio_temporal_neg_t, dim=-1)
+            logits_binary = logit_scale * torch.stack([sim_pos, sim_neg_t], dim=1)
+            labels_binary = torch.zeros(b, device=device, dtype=torch.long)  # (B, 2)
+            loss_logit_temporal = F.cross_entropy(logits_binary, labels_binary)
+
         # loss_logit_doa = F.cross_entropy(logits_per_audio_doa, cls_doa)
 
         return {
