@@ -21,7 +21,7 @@ class sCLAPLoss:
         - Triplet mode (stClotho): audio and text has shape (B*3, D)
           (we keep only positive text as anchors). In this mode we:
             * compute spatial/semantic losses on all 3B samples(3B vs 3B)
-            * compute temporal loss as hard-negative CE with candidates [pos, neg_t]
+            * compute temporal loss as 2-way, only compute similartiy between pos_audio,pos_text(anchor),neg_t_audio
               per anchor text_sed (B vs 2B)
         """
 
