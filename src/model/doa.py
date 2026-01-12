@@ -12,6 +12,7 @@ class HTSAT_DOA(nn.Module):
         self.mel_bins = cfg.data.n_mels
         self.sed_in_ch, self.doa_in_ch = 1, 7
         self.cfg = cfg
+        self.n_events = getattr(cfg.model, 'n_events', 2)
         
         ####################### Audio Branch #######################
         self.audio_scalar = nn.ModuleList(
@@ -20,7 +21,7 @@ class HTSAT_DOA(nn.Module):
                                                     **cfg.model.audio.kwargs)
         self.tscam_conv = nn.Conv2d(
             in_channels=self.audio_branch.num_features,
-            out_channels=3,
+            out_channels=3 * self.n_events,
             kernel_size=(self.audio_branch.SF, self.audio_branch.ST),
         )
         self.final_act = nn.Tanh()
@@ -51,6 +52,10 @@ class HTSAT_DOA(nn.Module):
         # return self.fc_doa(audio['embedding'])
         output = self.tscam_conv(audio['feature_maps']).squeeze()
         output = self.final_act(output)
+
+        if self.n_events > 1:
+            output = output.view(output.shape[0], self.n_events, 3)
+            
         return output
 
     
