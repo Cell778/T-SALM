@@ -53,6 +53,14 @@ class sCLAPLoss:
             progress = float(epoch_it + 1) / float(temporal_ramp_epochs)
             progress = max(0.0, min(1.0, progress))
             w_temp_eff = w_temp * progress
+
+        spatial_ramp_epochs = 4
+        if spatial_ramp_epochs <= 1:
+            w_spatial_eff = w_spatial
+        else:
+            progress = float(epoch_it + 1) / float(spatial_ramp_epochs)
+            progress = max(0.0, min(1.0, progress))
+            w_spatial_eff = w_spatial * progress
         # pred_doa, gt_doa, cls_doa = doa
         pred_doa, gt_doa = doa
         # Support multi-event DOA shapes: pred_doa (B, n_events, 3),
@@ -117,6 +125,7 @@ class sCLAPLoss:
 
             # temporal loss (v2) is only meaningful in triplet mode
             loss_logit_temporal = torch.zeros((), device=device)
+            loss_logit_spatial = torch.zeros((), device=device)
         else:
 
             b = text_feature_sed.shape[0]
@@ -238,6 +247,6 @@ class sCLAPLoss:
             'loss_doa': loss_doa,
             'total_loss': (1 - w_sem_eff) * loss_logit_spatial_semantic 
                 + w_sem_eff * loss_logit_semantic + w_doa * loss_doa
-                + w_temp_eff * loss_logit_temporal + w_spatial * loss_logit_spatial
+                + w_temp_eff * loss_logit_temporal + w_spatial_eff * loss_logit_spatial
 
         }

@@ -158,7 +158,8 @@ class sCLAPModelModule(BaseModelModule):
             'loss_logit_semantic': MeanMetric(), 
             # 'loss_logit_doa': MeanMetric(),
             'loss_logit_spatial_semantic': MeanMetric(),
-            'loss_logit_temporal': MeanMetric(),}
+            'loss_logit_temporal': MeanMetric(),
+            'loss_logit_spatial': MeanMetric(),}
         )
     
     def setup(self, stage):
