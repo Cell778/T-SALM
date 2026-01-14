@@ -38,6 +38,9 @@ class sCLAPLoss:
         # temporal loss weight: by default tie it to semantic weight for backward compat
         w_temp = weights_all[2] if len(weights_all) >= 3 else w_sem
 
+        #spatial loss weight
+        w_spatial = weights_all[3] if len(weights_all) >=4 else w_sem
+
         # semantic weight: keep original hard switch (turn on from epoch 4, i.e., epoch_it>=3)
         w_sem_eff = 0.0 if epoch_it < 3 else w_sem
 
@@ -167,19 +170,62 @@ class sCLAPLoss:
             ) / 2
 
             # temporal hard-negative loss (v2):
+
             # anchor = positive text_sed (from temporal_spatial_caption / spatialized_caption)
             # candidates = [pos, neg_t] audio_feature_sed
             # assume per-group order: [pos, neg_t, neg_s, ...]
             # cand_idx = (pos_idx[:, None] + temporal_offsets[None, :]).reshape(-1)  # (2B,)
+
+            #text to audio
             neg_t_idx = pos_idx + 1  # negative temporal indices
-            audio_temporal_pos = audio_feature_comb[pos_idx]  # extract auido feature comb for pos and neg_t only
-            text_temporal_anchor = text_feature_comb[pos_idx]
-            audio_temporal_neg_t = audio_feature_comb[neg_t_idx]
+            audio_temporal_pos = audio_feature_sed[pos_idx]  # extract auido feature comb for pos and neg_t only
+            text_temporal_anchor = text_feature_sed[pos_idx]
+            audio_temporal_neg_t = audio_feature_sed[neg_t_idx]
             sim_pos = torch.sum(text_temporal_anchor * audio_temporal_pos, dim=-1)
             sim_neg_t = torch.sum(text_temporal_anchor * audio_temporal_neg_t, dim=-1)
             logits_binary = logit_scale * torch.stack([sim_pos, sim_neg_t], dim=1)
-            labels_binary = torch.zeros(b, device=device, dtype=torch.long)  # (B, 2)
-            loss_logit_temporal = F.cross_entropy(logits_binary, labels_binary)
+            labels_binary = torch.zeros(b, device=device, dtype=torch.long)  
+            loss_logit_temporal_t2a = F.cross_entropy(logits_binary, labels_binary)
+
+            #audio to text
+            audio_temporal_anchor = audio_temporal_pos
+            text_temporal_pos = text_feature_sed[pos_idx]
+            text_temporal_neg_t = text_feature_sed[neg_t_idx]
+            sim_pos_a2t = torch.sum(audio_temporal_anchor * text_temporal_pos, dim=-1)
+            sim_neg_t_a2t = torch.sum(audio_temporal_anchor * text_temporal_neg_t, dim=-1)
+            logits_binary_a2t = logit_scale * torch.stack([sim_pos_a2t, sim_neg_t_a2t], dim=1)
+            labels_binary_a2t = torch.zeros(b, device=device, dtype=torch.long) 
+            loss_logit_temporal_a2t = F.cross_entropy(logits_binary_a2t, labels_binary_a2t)
+
+            loss_logit_temporal = (loss_logit_temporal_t2a + loss_logit_temporal_a2t) / 2
+
+            #Spatial BCE loss with hard negatives
+            #text to audio
+            neg_s_idx = pos_idx + 2  # negative semantic indices
+            audio_spatial_pos = audio_feature_comb[pos_idx]
+            text_spatial_anchor = text_feature_comb[pos_idx]
+            audio_spatial_neg_s = audio_feature_comb[neg_s_idx]
+            sim_pos_s_t2a = torch.sum(text_spatial_anchor * audio_spatial_pos, dim=-1)
+            sim_neg_s_t2a = torch.sum(text_spatial_anchor * audio_spatial_neg_s, dim=-1)
+            logits_binary_s_t2a = logit_scale * torch.stack([sim_pos_s_t2a, sim_neg_s_t2a], dim=1)
+            labels_binary_s_t2a = torch.zeros(b, device=device, dtype=torch.long)
+            loss_logit_spatial_s_t2a = F.cross_entropy(logits_binary_s_t2a, labels_binary_s_t2a)
+
+            #audio to text
+            audio_spatial_anchor = audio_spatial_pos
+            text_spatial_pos = text_feature_comb[pos_idx]
+            text_spatial_neg_s = text_feature_comb[neg_s_idx]
+            sim_pos_s_a2t = torch.sum(audio_spatial_anchor * text_spatial_pos, dim=-1)
+            sim_neg_s_a2t = torch.sum(audio_spatial_anchor * text_spatial_neg_s, dim=-1)
+            logits_binary_s_a2t = logit_scale * torch.stack([sim_pos_s_a2t, sim_neg_s_a2t], dim=1)
+            labels_binary_s_a2t = torch.zeros(b, device=device, dtype=torch.long)
+            loss_logit_spatial_s_a2t = F.cross_entropy(logits_binary_s_a2t, labels_binary_s_a2t)
+
+            loss_logit_spatial = (loss_logit_spatial_s_t2a + loss_logit_spatial_s_a2t) / 2
+
+
+            
+
 
         # loss_logit_doa = F.cross_entropy(logits_per_audio_doa, cls_doa)
 
@@ -191,6 +237,6 @@ class sCLAPLoss:
             'loss_doa': loss_doa,
             'total_loss': (1 - w_sem_eff) * loss_logit_spatial_semantic 
                 + w_sem_eff * loss_logit_semantic + w_doa * loss_doa
-                + w_temp_eff * loss_logit_temporal
+                + w_temp_eff * loss_logit_temporal + w_spatial * loss_logit_spatial
 
         }
