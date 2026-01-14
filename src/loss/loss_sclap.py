@@ -233,6 +233,7 @@ class sCLAPLoss:
             'loss_logit_semantic': loss_logit_semantic,
             'loss_logit_spatial_semantic': loss_logit_spatial_semantic,
             "loss_logit_temporal": loss_logit_temporal,
+            "loss_logit_spatial": loss_logit_spatial,
             # 'loss_logit_doa': loss_logit_doa,
             'loss_doa': loss_doa,
             'total_loss': (1 - w_sem_eff) * loss_logit_spatial_semantic 
