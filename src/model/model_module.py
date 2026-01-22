@@ -256,8 +256,8 @@ class sCLAPModelModule(BaseModelModule):
         audio_features, text_features, doa = self.forward(audio, text, longer)
         # text_feature_doa = self.encode_direction_text()
         # cls_doa_gt = batch_sample['cls_doa']
-        audio_emb = audio_features[-1]
-        text_emb = text_features[0]
+        audio_emb = audio_features[-1] #audio_triplet_emb
+        text_emb = text_features[0] #text_comb_emb
 
         modality_input = torch.cat([audio_emb, text_emb], dim=0)
         batch_size = audio_emb.size(0)
