@@ -61,6 +61,15 @@ class sCLAPLoss:
             progress = float(epoch_it + 1) / float(spatial_ramp_epochs)
             progress = max(0.0, min(1.0, progress))
             w_spatial_eff = w_spatial * progress
+
+        ts_ramp_epochs = 4
+        if ts_ramp_epochs <= 1:
+            w_ts_eff = w_temp
+        else:
+            progress = float(epoch_it + 1) / float(ts_ramp_epochs)
+            progress = max(0.0, min(1.0, progress))
+            w_ts_eff = w_temp * progress
+            
         # pred_doa, gt_doa, cls_doa = doa
         pred_doa, gt_doa = doa
         # Support multi-event DOA shapes: pred_doa (B, n_events, 3),
@@ -89,7 +98,7 @@ class sCLAPLoss:
             loss_doa = (1 - cos_sim).mean()
         
         device = audio_features[0].device
-        audio_feature_comb, audio_feature_sed, audio_feature_doa = audio_features
+        audio_feature_comb, audio_feature_sed, audio_feature_doa, audio_feature_temporal, audio_feature_triplet = audio_features
         # text_feature_comb, text_feature_sed, text_feature_doa = text_features
         text_feature_comb, text_feature_sed = text_features
         
@@ -232,6 +241,36 @@ class sCLAPLoss:
 
             loss_logit_spatial = (loss_logit_spatial_s_t2a + loss_logit_spatial_s_a2t) / 2
 
+            #temporal + spatial loss 
+            #text to audio
+            audio_pos = audio_feature_triplet[pos_idx]
+            text_anchor = text_feature_comb[pos_idx]
+            audio_neg_t = audio_feature_triplet[neg_t_idx]
+            audio_neg_s = audio_feature_triplet[neg_s_idx]
+            sim_pos = torch.sum(text_anchor * audio_pos, dim=-1)
+            sim_neg_t = torch.sum(text_anchor * audio_neg_t, dim=-1)
+            sim_neg_s = torch.sum(text_anchor * audio_neg_s, dim=-1)
+            logits_3way_t2a = logit_scale * torch.stack([sim_pos, sim_neg_t, sim_neg_s], dim=1)
+            labels_3way_t2a = torch.zeros(b, device=device, dtype=torch.long)
+            loss_logit_3way_t2a = F.cross_entropy(logits_3way_t2a, labels_3way_t2a)
+
+            #audio to text
+            audio_anchor = audio_pos
+            text_pos = text_feature_comb[pos_idx]
+            text_neg_t = text_feature_comb[neg_t_idx]
+            text_neg_s = text_feature_comb[neg_s_idx]
+            sim_pos_a2t = torch.sum(audio_anchor * text_pos, dim=-1)
+            sim_neg_t_a2t = torch.sum(audio_anchor * text_neg_t, dim=-1)
+            sim_neg_s_a2t = torch.sum(audio_anchor * text_neg_s, dim=-1)
+            logits_3way_a2t = logit_scale * torch.stack([sim_pos_a2t, sim_neg_t_a2t, sim_neg_s_a2t], dim=1)
+            labels_3way_a2t = torch.zeros(b, device=device, dtype=torch.long)
+            loss_logit_3way_a2t = F.cross_entropy(logits_3way_a2t, labels_3way_a2t)
+
+            loss_logit_ts = (loss_logit_3way_t2a + loss_logit_3way_a2t) / 2
+
+
+
+
 
             
 
@@ -241,12 +280,13 @@ class sCLAPLoss:
         return {
             'loss_logit_semantic': loss_logit_semantic,
             'loss_logit_spatial_semantic': loss_logit_spatial_semantic,
-            "loss_logit_temporal": loss_logit_temporal,
-            "loss_logit_spatial": loss_logit_spatial,
+            # "loss_logit_temporal": loss_logit_temporal,
+            # "loss_logit_spatial": loss_logit_spatial,
             # 'loss_logit_doa': loss_logit_doa,
+            'loss_logit_ts': loss_logit_ts,
             'loss_doa': loss_doa,
             'total_loss': (1 - w_sem_eff) * loss_logit_spatial_semantic 
                 + w_sem_eff * loss_logit_semantic + w_doa * loss_doa
-                + w_temp_eff * loss_logit_temporal + w_spatial_eff * loss_logit_spatial
+                + w_ts_eff * loss_logit_ts
 
         }

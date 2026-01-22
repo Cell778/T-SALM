@@ -11,6 +11,39 @@ from .component.htsat import HTSAT_Swin_Transformer
 
 torch.serialization.add_safe_globals([numpy.core.multiarray.scalar])
 
+class GradientReversalFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, alpha):
+        ctx.alpha = alpha
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        output = grad_output.neg() * ctx.alpha
+        return output, None
+    
+class ModalityClassifier(nn.Module):
+    def __init__(self, input_dim):
+        super(ModalityClassifier, self).__init__()
+        self.classifier = nn.Sequential(
+            nn.Linear(input_dim, input_dim // 2),
+            nn.ReLU(),
+            nn.Linear(input_dim // 2, input_dim // 4),
+            nn.ReLU(),
+            nn.Linear(input_dim // 4, input_dim // 8),
+            nn.ReLU(),
+            nn.Linear(input_dim // 8, input_dim // 16),
+            nn.ReLU(),
+            nn.Linear(input_dim // 16, 1),
+            nn.Sigmoid()
+        )
+        
+    def forward(self, x, alpha=1.0):
+        x = GradientReversalFunction.apply(x, alpha)
+        x = self.classifier(x)
+        return x
+    
+
 
 class sCLAP(nn.Module):
     def __init__(self, cfg, joint_embed_dim=512, mlp_act='relu'):
@@ -229,7 +262,44 @@ class sCLAP_Single(sCLAP):
             print('Loading LAION-CLAP text encoder from {}'.format(text_path))
         else: ValueError('Unknown text encoder checkpoint: {}'.format(text_path))
 
-        
+
+#Temporal embedding encoder
+class TemporalAudioEncoder(nn.Module):
+
+    def __init__(self, embedding_dim=512, num_temporal_steps=2, num_heads=8, dim_feedforward=2048, num_layers=2):
+        super().__init__()
+        self.temporal_pos_embedding = nn.Parameter(torch.randn(1, num_temporal_steps, embedding_dim))
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embedding_dim, 
+            nhead=num_heads, 
+            dim_feedforward=dim_feedforward,
+            batch_first=True,
+            dropout=0.1)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        self.ln = nn.LayerNorm(embedding_dim)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(embedding_dim, embedding_dim),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(embedding_dim, embedding_dim)
+        )
+
+    def forward(self, audio_embeddings):
+        # audio_embeddings: (B, T, D)
+        B, T, D = audio_embeddings.size()
+        temporal_pos_embedding = self.temporal_pos_embedding[:, :T, :]  # (1, T, D)
+        x = audio_embeddings + temporal_pos_embedding  # (B, T, D)
+
+        x = self.transformer_encoder(x)  # (B, T, D)
+        x = self.ln(x)  # (B, T, D)
+
+        x = x.mean(dim=1)  # (B, D)
+        temporal_embeds= self.mlp(x)  # (B, D)
+
+        return temporal_embeds      
 
 class sCLAP_Dual(sCLAP):
     def __init__(self, cfg, joint_embed_dim=512, mlp_act='relu'):
@@ -249,6 +319,31 @@ class sCLAP_Dual(sCLAP):
             nn.Linear(cfg.model.audio.output_dim, joint_embed_dim),
             self.mlp_act(),
             nn.Linear(joint_embed_dim, joint_embed_dim))
+       
+        #Audio Temporal
+        self.audio_temporal_encoder = TemporalAudioEncoder(
+            embedding_dim=joint_embed_dim,
+            num_temporal_steps=4,
+            num_heads=8,
+            dim_feedforward=2048,
+            num_layers=2
+        )
+
+         #Audio Temporal Projection 
+        self.audio_temporal_projection = nn.Sequential(
+            nn.Linear(cfg.model.audio.output_dim, joint_embed_dim),
+            self.mlp_act(),
+            nn.Linear(joint_embed_dim, joint_embed_dim))
+        
+        #Final Audio Projection
+        self.final_audio_projection= nn.Sequential(
+            nn.Linear(joint_embed_dim*2, joint_embed_dim),
+            self.mlp_act(),
+            nn.Linear(joint_embed_dim, joint_embed_dim))
+        
+        #Modality Classifier
+        self.modality_classifier = ModalityClassifier(joint_embed_dim)
+
         # self.audio_projection = nn.Sequential(
         #     # nn.Linear(cfg.model.audio.output_dim*2, joint_embed_dim),
         #     nn.Linear(joint_embed_dim * 2, joint_embed_dim),
@@ -270,6 +365,7 @@ class sCLAP_Dual(sCLAP):
         self.audio_branch.stitch1.requires_grad_(True)
 
 
+
     def encode_audio(self, audio1, audio2, longer_list=[]):
         return self.audio_branch(audio1, audio2, longer_list)
     
@@ -286,11 +382,44 @@ class sCLAP_Dual(sCLAP):
             audio2[..., [nch]] = self.audio_scalar[nch](audio2[..., [nch]])
         audio2 = audio2.transpose(1, 3)
 
-        audio_embeds = self.encode_audio(audio1, audio2, longer_list)
+        audio_output = self.encode_audio(audio1, audio2, longer_list)
 
-        audio_sed_embeds = self.audio_sed_projection(audio_embeds['sed_embedding'])
-        audio_doa_embeds = self.audio_doa_projection(audio_embeds['doa_embedding'])
+        audio_sed_embeds = self.audio_sed_projection(audio_output['sed_embedding'])
+        audio_doa_embeds = self.audio_doa_projection(audio_output['doa_embedding'])
         audio_embeds = audio_sed_embeds + self.weights * audio_doa_embeds
+
+        sed_feature_maps = audio_output['sed_feature_maps']  # (B, C, T, F)
+        doa_feature_maps = audio_output['doa_feature_maps']  # (B, C, T, F)
+
+        T = sed_feature_maps.shape[2]
+        chunck = T // 4
+
+        sed_chunck1 = sed_feature_maps[:,:,:chunck,:].mean(dim=(2,3))
+        sed_chunck2 = sed_feature_maps[:,:,chunck:2*chunck,:].mean(dim=(2,3))
+        sed_chunck3 = sed_feature_maps[:,:,2*chunck:3*chunck,:].mean(dim=(2,3))
+        sed_chunck4 = sed_feature_maps[:,:,3*chunck:,:].mean(dim=(2,3))
+
+        doa_chunck1 = doa_feature_maps[:,:,:chunck,:].mean(dim=(2,3))
+        doa_chunck2 = doa_feature_maps[:,:,chunck:2*chunck,:].mean(dim=(2,3))
+        doa_chunck3 = doa_feature_maps[:,:,2*chunck:3*chunck,:].mean(dim=(2,3))
+        doa_chunck4 = doa_feature_maps[:,:,3*chunck:,:].mean(dim=(2,3))
+
+        chunck1_embeds = self.audio_temporal_projection(sed_chunck1) + \
+                        self.weights * self.audio_temporal_projection(doa_chunck1)
+        chunck2_embeds = self.audio_temporal_projection(sed_chunck2) + \
+                        self.weights * self.audio_temporal_projection(doa_chunck2)
+        chunck3_embeds = self.audio_temporal_projection(sed_chunck3) + \
+                        self.weights * self.audio_temporal_projection(doa_chunck3)
+        chunck4_embeds = self.audio_temporal_projection(sed_chunck4) + \
+                        self.weights * self.audio_temporal_projection(doa_chunck4)
+        
+        temporal_seq = torch.stack([chunck1_embeds, chunck2_embeds, chunck3_embeds, chunck4_embeds], dim=1)  # (B, 4, D)
+        audio_temporal_embeds = self.audio_temporal_encoder(temporal_seq) 
+
+        combined_audio_embeds = torch.cat([audio_embeds, audio_temporal_embeds], dim=-1)
+        audio_triplet_embeds = self.final_audio_projection(combined_audio_embeds)
+        
+        
         # audio_embeds = self.audio_projection(
         #     torch.cat([audio_sed_embeds, audio_doa_embeds], dim=-1))
 
@@ -298,7 +427,7 @@ class sCLAP_Dual(sCLAP):
         # audio_sed_embeds = F.normalize(audio_sed_embeds, dim=-1)
         # audio_doa_embeds = F.normalize(audio_doa_embeds, dim=-1)
         
-        return [audio_embeds, audio_sed_embeds, audio_doa_embeds]
+        return [audio_embeds, audio_sed_embeds, audio_doa_embeds, audio_temporal_embeds, audio_triplet_embeds]
 
     def forward(self, audio, text, longer_list=[]):
         """Forward audio and text into the sCLAP"""

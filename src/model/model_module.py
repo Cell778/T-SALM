@@ -158,8 +158,11 @@ class sCLAPModelModule(BaseModelModule):
             'loss_logit_semantic': MeanMetric(), 
             # 'loss_logit_doa': MeanMetric(),
             'loss_logit_spatial_semantic': MeanMetric(),
-            'loss_logit_temporal': MeanMetric(),
-            'loss_logit_spatial': MeanMetric(),}
+            # 'loss_logit_temporal': MeanMetric(),
+            # 'loss_logit_spatial': MeanMetric(),
+            'loss_logit_ts': MeanMetric(),
+            'loss_modality': MeanMetric()
+            }
         )
     
     def setup(self, stage):
@@ -253,6 +256,21 @@ class sCLAPModelModule(BaseModelModule):
         audio_features, text_features, doa = self.forward(audio, text, longer)
         # text_feature_doa = self.encode_direction_text()
         # cls_doa_gt = batch_sample['cls_doa']
+        audio_emb = audio_features[-1]
+        text_emb = text_features[0]
+
+        modality_input = torch.cat([audio_emb, text_emb], dim=0)
+        batch_size = audio_emb.size(0)
+        labels_audio = torch.zeros(batch_size, 1, device=self.device)
+        labels_text = torch.ones(batch_size, 1, device=self.device)
+        modality_labels = torch.cat([labels_audio, labels_text], dim=0)
+        modality_preds = self.net.modality_classifier(modality_input)
+        modality_loss = F.binary_cross_entropy(modality_preds, modality_labels)
+        loss_weights = self.cfg.model.loss_weights
+        if isinstance (loss_weights, list):
+            w_modality = loss_weights[3] if len(loss_weights) > 3 else 0.1
+        else:
+            w_modality = 0.1
 
         if self.trainer.world_size > 1:
             audio_features_temp, text_features_temp = [], []
@@ -274,6 +292,9 @@ class sCLAPModelModule(BaseModelModule):
                                self.net.logit_scale,
                                [doa, batch_sample['cart_doa']],
                                epoch_it=self.current_epoch, is_triplet=is_triplet)
+        total_loss['total_loss'] = total_loss['total_loss'] + w_modality * modality_loss
+        total_loss['loss_modality'] = modality_loss
+
         for key, loss in total_loss.items():
             self.train_loss[key].update(loss)
         # return total_loss['loss_doa']
