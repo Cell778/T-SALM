@@ -79,11 +79,14 @@ class sCLAPLoss:
         elif pred_doa.dim() == 2 and gt_doa.dim() == 3:
             pred_doa = pred_doa.unsqueeze(1).expand_as(gt_doa)
 
+        pred_doa_norm = F.normalize(pred_doa, dim=-1, eps=1e-8)
+        gt_doa_norm = F.normalize(gt_doa, dim=-1, eps=1e-8)
+
         # compute cosine similarity over last dim
-        if pred_doa.dim() == 3 and gt_doa.dim() == 3 and pred_doa.size(1) == 2 and gt_doa.size(1) == 2:
+        if pred_doa_norm.dim() == 3 and gt_doa_norm.dim() == 3 and pred_doa_norm.size(1) == 2 and gt_doa_norm.size(1) == 2:
             # permutation-invariant for 2-event case (swap events if beneficial)
-            p0, p1 = pred_doa[:, 0, :], pred_doa[:, 1, :]
-            g0, g1 = gt_doa[:, 0, :], gt_doa[:, 1, :]
+            p0, p1 = pred_doa_norm[:, 0, :], pred_doa_norm[:, 1, :]
+            g0, g1 = gt_doa_norm[:, 0, :], gt_doa_norm[:, 1, :]
             c00 = F.cosine_similarity(p0, g0, dim=-1)
             c11 = F.cosine_similarity(p1, g1, dim=-1)
             c01 = F.cosine_similarity(p0, g1, dim=-1)
@@ -94,7 +97,7 @@ class sCLAPLoss:
             loss_doa = (1 - best_cos).mean()
         else:
             # average over events and batch
-            cos_sim = F.cosine_similarity(pred_doa, gt_doa, dim=-1)
+            cos_sim = F.cosine_similarity(pred_doa_norm, gt_doa_norm, dim=-1)
             loss_doa = (1 - cos_sim).mean()
         
         device = audio_features[0].device
@@ -251,6 +254,7 @@ class sCLAPLoss:
             sim_neg_t = torch.sum(text_anchor * audio_neg_t, dim=-1)
             sim_neg_s = torch.sum(text_anchor * audio_neg_s, dim=-1)
             logits_3way_t2a = logit_scale * torch.stack([sim_pos, sim_neg_t, sim_neg_s], dim=1)
+            logits_3way_t2a = torch.clamp(logits_3way_t2a, -50.0, 50.0)
             labels_3way_t2a = torch.zeros(b, device=device, dtype=torch.long)
             loss_logit_3way_t2a = F.cross_entropy(logits_3way_t2a, labels_3way_t2a)
 
@@ -263,6 +267,7 @@ class sCLAPLoss:
             sim_neg_t_a2t = torch.sum(audio_anchor * text_neg_t, dim=-1)
             sim_neg_s_a2t = torch.sum(audio_anchor * text_neg_s, dim=-1)
             logits_3way_a2t = logit_scale * torch.stack([sim_pos_a2t, sim_neg_t_a2t, sim_neg_s_a2t], dim=1)
+            logits_3way_a2t = torch.clamp(logits_3way_a2t, -50.0, 50.0)
             labels_3way_a2t = torch.zeros(b, device=device, dtype=torch.long)
             loss_logit_3way_a2t = F.cross_entropy(logits_3way_a2t, labels_3way_a2t)
 

@@ -265,7 +265,8 @@ class sCLAPModelModule(BaseModelModule):
         labels_text = torch.ones(batch_size, 1, device=self.device)
         modality_labels = torch.cat([labels_audio, labels_text], dim=0)
         modality_preds = self.net.modality_classifier(modality_input)
-        modality_loss = F.binary_cross_entropy(modality_preds, modality_labels)
+        modality_preds = torch.clamp(modality_preds, min=-50, max=50)
+        modality_loss = F.binary_cross_entropy_with_logits(modality_preds, modality_labels)
         loss_weights = self.cfg.model.loss_weights
         if isinstance (loss_weights, list):
             w_modality = loss_weights[3] if len(loss_weights) > 3 else 0.1

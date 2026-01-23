@@ -34,8 +34,7 @@ class ModalityClassifier(nn.Module):
             nn.ReLU(),
             nn.Linear(input_dim // 8, input_dim // 16),
             nn.ReLU(),
-            nn.Linear(input_dim // 16, 1),
-            nn.Sigmoid()
+            nn.Linear(input_dim // 16, 1)
         )
         
     def forward(self, x, alpha=1.0):
@@ -434,6 +433,10 @@ class sCLAP_Dual(sCLAP):
 
         audio_embedding = self.get_audio_embedding(audio, longer_list)
         text_embedding = self.get_text_embedding(text)
+
+        audio_embedding = [F.normalize(x, dim=-1) for x in audio_embedding]
+        text_embedding = [F.normalize(x, dim=-1) for x in text_embedding]
+        
         doa = self.fc_doa(audio_embedding[-1])
         if doa.dim() == 2:
             b = doa.shape[0]
