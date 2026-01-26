@@ -184,7 +184,7 @@ class sCLAP_Single(sCLAP):
 
         audio_embedding = self.get_audio_embedding(audio, longer_list)
         text_embedding = self.get_text_embedding(text)
-        doa = self.fc_doa(audio_embedding[-1])
+        doa = self.fc_doa(audio_embedding[2])
         if doa.dim() == 2:
             b = doa.shape[0]
             doa = doa.view(b, self.n_events, 3)
@@ -316,6 +316,14 @@ class sCLAP_Dual(sCLAP):
             nn.Linear(cfg.model.audio.output_dim, joint_embed_dim),
             self.mlp_act(),
             nn.Linear(joint_embed_dim, joint_embed_dim))
+        
+        #Conv for temporal audio
+        self.audio_temporal_conv = nn.Sequential(
+            nn.Conv2d(cfg.model.audio.output_dim, cfg.model.audio.output_dim, kernel_size=(self.audio_branch.sed_encoder.SF, 1)),
+            nn.BatchNorm2d(cfg.model.audio.output_dim),
+            self.mlp_act(),
+        )
+
        
         #Audio Temporal
         self.audio_temporal_encoder = TemporalAudioEncoder(
@@ -350,7 +358,7 @@ class sCLAP_Dual(sCLAP):
         # ============================================================
         self.weights = nn.Parameter(torch.ones([joint_embed_dim]))
 
-        self.temporal_alpha = nn.Parameter(torch.tensor(0.0))
+        self.temporal_alpha = nn.Parameter(torch.full((joint_embed_dim,), 0.1))
 
         if cfg.ckpt_path is None: 
             self.load_pretrained_weights(cfg.model.audio.ckpt_path[0], 
@@ -392,14 +400,18 @@ class sCLAP_Dual(sCLAP):
 
         B, C, F, T = sed_feature_maps.shape
 
-        chunck = T // 2
+        sed_temporal_feat = self.audio_temporal_conv(sed_feature_maps).squeeze(2)
+        doa_temporal_feat = self.audio_temporal_conv(doa_feature_maps).squeeze(2)
 
-        sed_chunck1 = sed_feature_maps[:,:,:,:chunck].mean(dim=(2,3))
-        sed_chunck2 = sed_feature_maps[:,:,:,chunck:].mean(dim=(2,3))
+        T_sed = sed_temporal_feat.shape[-1]
+        T_doa = doa_temporal_feat.shape[-1]
 
-        doa_chunck1 = doa_feature_maps[:,:,:,:chunck].mean(dim=(2,3))
-        doa_chunck2 = doa_feature_maps[:,:,:,chunck:].mean(dim=(2,3))
 
+        sed_chunck1 = sed_feature_maps[..., :T_sed//2].mean(dim=(-1))
+        sed_chunck2 = sed_feature_maps[..., T_sed//2:].mean(dim=(-1))
+
+        doa_chunck1 = doa_feature_maps[..., :T_doa//2].mean(dim=(-1))
+        doa_chunck2 = doa_feature_maps[..., T_doa//2:].mean(dim=(-1))
         chunck1_embeds = self.audio_temporal_projection(sed_chunck1) + \
                         self.weights * self.audio_temporal_projection(doa_chunck1)
         chunck2_embeds = self.audio_temporal_projection(sed_chunck2) + \
@@ -408,7 +420,7 @@ class sCLAP_Dual(sCLAP):
         temporal_seq = torch.stack([chunck1_embeds, chunck2_embeds], dim=1)  # (B, 2, D)
         audio_temporal_embeds = self.audio_temporal_encoder(temporal_seq) 
 
-        audio_triplet_embeds = audio_embeds + self.temporal_alpha * self.final_audio_projection(audio_temporal_embeds)
+        audio_triplet_embeds = audio_embeds + self.temporal_alpha.unsqueeze(0) * self.final_audio_projection(audio_temporal_embeds)
         
         
         # audio_embeds = self.audio_projection(
