@@ -158,8 +158,8 @@ class sCLAPModelModule(BaseModelModule):
             'loss_logit_semantic': MeanMetric(), 
             # 'loss_logit_doa': MeanMetric(),
             'loss_logit_spatial_semantic': MeanMetric(),
-            # 'loss_logit_temporal': MeanMetric(),
-            # 'loss_logit_spatial': MeanMetric(),
+            'loss_logit_temporal': MeanMetric(),
+            'loss_logit_spatial': MeanMetric(),
             'loss_logit_ts': MeanMetric(),
             'loss_modality': MeanMetric()
             }
@@ -253,10 +253,10 @@ class sCLAPModelModule(BaseModelModule):
         text = {'text': text_sed,
             'text_comb': text_comb}
         longer = batch_sample['longer']
-        audio_features, text_features, doa = self.forward(audio, text, longer)
+        audio_features, text_features, doa = self.forward(audio, text, longer, normalize=False)
         # text_feature_doa = self.encode_direction_text()
         # cls_doa_gt = batch_sample['cls_doa']
-        audio_emb = audio_features[-1] #audio_triplet_emb
+        audio_emb = audio_features[0] #audio_comb_emb
         text_emb = text_features[0] #text_comb_emb
 
         modality_input = torch.cat([audio_emb, text_emb], dim=0)
@@ -269,9 +269,20 @@ class sCLAPModelModule(BaseModelModule):
         modality_loss = F.binary_cross_entropy_with_logits(modality_preds, modality_labels)
         loss_weights = self.cfg.model.loss_weights
         if isinstance (loss_weights, list):
-            w_modality = loss_weights[3] if len(loss_weights) > 3 else 0.1
+            w_modality = loss_weights[5] if len(loss_weights) > 5 else 0.05
         else:
-            w_modality = 0.1
+            w_modality = 0.05
+
+        modality_ramp_epochs = 4
+        if modality_ramp_epochs <= 0:
+            w_modality_eff = w_modality
+        else:
+            if self.current_epoch < 3:
+                w_modality_eff = 0.0
+            else:
+                progress = float(self.current_epoch - 2) / float(modality_ramp_epochs)
+                progress = max(0.0, min(1.0, progress))
+                w_modality_eff = w_modality * progress    
 
         if self.trainer.world_size > 1:
             audio_features_temp, text_features_temp = [], []
@@ -293,7 +304,7 @@ class sCLAPModelModule(BaseModelModule):
                                self.net.logit_scale,
                                [doa, batch_sample['cart_doa']],
                                epoch_it=self.current_epoch, is_triplet=is_triplet)
-        total_loss['total_loss'] = total_loss['total_loss'] + w_modality * modality_loss
+        total_loss['total_loss'] = total_loss['total_loss'] + w_modality_eff * modality_loss
         total_loss['loss_modality'] = modality_loss
 
         for key, loss in total_loss.items():
@@ -366,7 +377,7 @@ class sCLAPModelModule(BaseModelModule):
             for idx in range(len(text_features)):
                 text_features[idx] = F.normalize(text_features[idx], dim=-1)
         
-        self.system_output['all_audio_features'].append(audio_features[0])
+        self.system_output['all_audio_features'].append(audio_features[-1])
         # self.system_output['sed_audio_features'].append(audio_features[1])
         # self.system_output['doa_audio_features'].append(audio_features[2])
         self.system_output['all_text_features'].append(text_features[0])

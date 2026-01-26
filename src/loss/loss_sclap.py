@@ -41,8 +41,11 @@ class sCLAPLoss:
         #spatial loss weight
         w_spatial = weights_all[3] if len(weights_all) >=4 else w_sem
 
-        # semantic weight: keep original hard switch (turn on from epoch 4, i.e., epoch_it>=3)
-        w_sem_eff = 0.0 if epoch_it < 3 else w_sem
+        #3-way loss weight
+        w_ts = weights_all[4] if len(weights_all) >=5 else w_sem
+
+        #semantic loss weight
+        w_sem_eff = w_sem
 
         # temporal weight: start smaller in early epochs, then ramp up to the configured final
         # value (e.g., 0.5). This helps avoid early training instability from hard negatives.
@@ -64,11 +67,11 @@ class sCLAPLoss:
 
         ts_ramp_epochs = 4
         if ts_ramp_epochs <= 1:
-            w_ts_eff = w_temp
+            w_ts_eff = w_ts
         else:
             progress = float(epoch_it + 1) / float(ts_ramp_epochs)
             progress = max(0.0, min(1.0, progress))
-            w_ts_eff = w_temp * progress
+            w_ts_eff = w_ts * progress
             
         # pred_doa, gt_doa, cls_doa = doa
         pred_doa, gt_doa = doa
@@ -244,7 +247,7 @@ class sCLAPLoss:
 
             loss_logit_spatial = (loss_logit_spatial_s_t2a + loss_logit_spatial_s_a2t) / 2
 
-            #temporal + spatial loss 
+            #3-way loss (use triplet features)
             #text to audio
             audio_pos = audio_feature_triplet[pos_idx]
             text_anchor = text_feature_comb[pos_idx]
@@ -273,25 +276,19 @@ class sCLAPLoss:
 
             loss_logit_ts = (loss_logit_3way_t2a + loss_logit_3way_a2t) / 2
 
-
-
-
-
-            
-
-
         # loss_logit_doa = F.cross_entropy(logits_per_audio_doa, cls_doa)
 
         return {
             'loss_logit_semantic': loss_logit_semantic,
             'loss_logit_spatial_semantic': loss_logit_spatial_semantic,
-            # "loss_logit_temporal": loss_logit_temporal,
-            # "loss_logit_spatial": loss_logit_spatial,
+            "loss_logit_temporal": loss_logit_temporal,
+            "loss_logit_spatial": loss_logit_spatial,
             # 'loss_logit_doa': loss_logit_doa,
             'loss_logit_ts': loss_logit_ts,
             'loss_doa': loss_doa,
-            'total_loss': (1 - w_sem_eff) * loss_logit_spatial_semantic 
-                + w_sem_eff * loss_logit_semantic + w_doa * loss_doa
+            'total_loss': 0.5 * loss_logit_spatial_semantic 
+                + w_sem_eff * loss_logit_semantic + w_doa * loss_doa + w_spatial_eff * loss_logit_spatial
+                + w_temp_eff * loss_logit_temporal
                 + w_ts_eff * loss_logit_ts
 
         }

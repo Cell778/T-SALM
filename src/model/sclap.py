@@ -27,14 +27,12 @@ class ModalityClassifier(nn.Module):
         super(ModalityClassifier, self).__init__()
         self.classifier = nn.Sequential(
             nn.Linear(input_dim, input_dim // 2),
-            nn.ReLU(),
+            nn.GELU(),
+            nn.Dropout(0.2),
             nn.Linear(input_dim // 2, input_dim // 4),
-            nn.ReLU(),
-            nn.Linear(input_dim // 4, input_dim // 8),
-            nn.ReLU(),
-            nn.Linear(input_dim // 8, input_dim // 16),
-            nn.ReLU(),
-            nn.Linear(input_dim // 16, 1)
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(input_dim // 4, 1)
         )
         
     def forward(self, x, alpha=1.0):
@@ -322,7 +320,7 @@ class sCLAP_Dual(sCLAP):
         #Audio Temporal
         self.audio_temporal_encoder = TemporalAudioEncoder(
             embedding_dim=joint_embed_dim,
-            num_temporal_steps=4,
+            num_temporal_steps=2,
             num_heads=8,
             dim_feedforward=2048,
             num_layers=2
@@ -336,7 +334,7 @@ class sCLAP_Dual(sCLAP):
         
         #Final Audio Projection
         self.final_audio_projection= nn.Sequential(
-            nn.Linear(joint_embed_dim*2, joint_embed_dim),
+            nn.Linear(joint_embed_dim, joint_embed_dim),
             self.mlp_act(),
             nn.Linear(joint_embed_dim, joint_embed_dim))
         
@@ -351,6 +349,8 @@ class sCLAP_Dual(sCLAP):
 
         # ============================================================
         self.weights = nn.Parameter(torch.ones([joint_embed_dim]))
+
+        self.temporal_alpha = nn.Parameter(torch.tensor(0.0))
 
         if cfg.ckpt_path is None: 
             self.load_pretrained_weights(cfg.model.audio.ckpt_path[0], 
@@ -385,38 +385,30 @@ class sCLAP_Dual(sCLAP):
 
         audio_sed_embeds = self.audio_sed_projection(audio_output['sed_embedding'])
         audio_doa_embeds = self.audio_doa_projection(audio_output['doa_embedding'])
-        audio_embeds = audio_sed_embeds + self.weights * audio_doa_embeds
+        audio_embeds = (audio_sed_embeds + self.weights * audio_doa_embeds)/2
 
-        sed_feature_maps = audio_output['sed_feature_maps']  # (B, C, T, F)
-        doa_feature_maps = audio_output['doa_feature_maps']  # (B, C, T, F)
+        sed_feature_maps = audio_output['sed_feature_maps']  # (B, C, F, T)
+        doa_feature_maps = audio_output['doa_feature_maps']  # (B, C, F, T)
 
-        T = sed_feature_maps.shape[2]
-        chunck = T // 4
+        B, C, F, T = sed_feature_maps.shape
 
-        sed_chunck1 = sed_feature_maps[:,:,:chunck,:].mean(dim=(2,3))
-        sed_chunck2 = sed_feature_maps[:,:,chunck:2*chunck,:].mean(dim=(2,3))
-        sed_chunck3 = sed_feature_maps[:,:,2*chunck:3*chunck,:].mean(dim=(2,3))
-        sed_chunck4 = sed_feature_maps[:,:,3*chunck:,:].mean(dim=(2,3))
+        chunck = T // 2
 
-        doa_chunck1 = doa_feature_maps[:,:,:chunck,:].mean(dim=(2,3))
-        doa_chunck2 = doa_feature_maps[:,:,chunck:2*chunck,:].mean(dim=(2,3))
-        doa_chunck3 = doa_feature_maps[:,:,2*chunck:3*chunck,:].mean(dim=(2,3))
-        doa_chunck4 = doa_feature_maps[:,:,3*chunck:,:].mean(dim=(2,3))
+        sed_chunck1 = sed_feature_maps[:,:,:,:chunck].mean(dim=(2,3))
+        sed_chunck2 = sed_feature_maps[:,:,:,chunck:].mean(dim=(2,3))
+
+        doa_chunck1 = doa_feature_maps[:,:,:,:chunck].mean(dim=(2,3))
+        doa_chunck2 = doa_feature_maps[:,:,:,chunck:].mean(dim=(2,3))
 
         chunck1_embeds = self.audio_temporal_projection(sed_chunck1) + \
                         self.weights * self.audio_temporal_projection(doa_chunck1)
         chunck2_embeds = self.audio_temporal_projection(sed_chunck2) + \
                         self.weights * self.audio_temporal_projection(doa_chunck2)
-        chunck3_embeds = self.audio_temporal_projection(sed_chunck3) + \
-                        self.weights * self.audio_temporal_projection(doa_chunck3)
-        chunck4_embeds = self.audio_temporal_projection(sed_chunck4) + \
-                        self.weights * self.audio_temporal_projection(doa_chunck4)
-        
-        temporal_seq = torch.stack([chunck1_embeds, chunck2_embeds, chunck3_embeds, chunck4_embeds], dim=1)  # (B, 4, D)
+
+        temporal_seq = torch.stack([chunck1_embeds, chunck2_embeds], dim=1)  # (B, 2, D)
         audio_temporal_embeds = self.audio_temporal_encoder(temporal_seq) 
 
-        combined_audio_embeds = torch.cat([audio_embeds, audio_temporal_embeds], dim=-1)
-        audio_triplet_embeds = self.final_audio_projection(combined_audio_embeds)
+        audio_triplet_embeds = audio_embeds + self.temporal_alpha * self.final_audio_projection(audio_temporal_embeds)
         
         
         # audio_embeds = self.audio_projection(
