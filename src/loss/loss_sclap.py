@@ -104,7 +104,7 @@ class sCLAPLoss:
             loss_doa = (1 - cos_sim).mean()
         
         device = audio_features[0].device
-        audio_feature_comb, audio_feature_sed, audio_feature_doa, audio_feature_temporal, audio_feature_triplet = audio_features
+        audio_feature_comb, audio_feature_sed, audio_feature_doa, doa_map, audio_feature_temporal, audio_feature_triplet = audio_features
         # text_feature_comb, text_feature_sed, text_feature_doa = text_features
         text_feature_comb, text_feature_sed = text_features
         

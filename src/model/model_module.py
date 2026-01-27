@@ -310,6 +310,15 @@ class sCLAPModelModule(BaseModelModule):
         for key, loss in total_loss.items():
             self.train_loss[key].update(loss)
         # return total_loss['loss_doa']
+
+        if hasattr(self.logger, "experiment"):
+            writer = self.logger.experiment  # SummaryWriter
+            vals = self.net.temporal_alpha.detach().cpu().numpy()
+        # 标量（mean）
+            writer.add_scalar("temporal_alpha/mean", float(vals.mean()), global_step=self.global_step)
+        # 向量直方图（如果 temporal_alpha 是向量）
+            writer.add_histogram("temporal_alpha/hist", vals, global_step=self.global_step)
+
         return total_loss['total_loss']
 
     @torch.no_grad()

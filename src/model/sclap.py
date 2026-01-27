@@ -323,7 +323,14 @@ class sCLAP_Dual(sCLAP):
             nn.BatchNorm2d(cfg.model.audio.output_dim),
             self.mlp_act(),
         )
-
+        
+        #Conv for doa
+        doa_feat_dim = self.audio_branch.doa_encoder.num_features 
+        self.audio_doa_conv = nn.Sequential(
+            nn.Conv2d(doa_feat_dim, 3, kernel_size=(self.audio_branch.doa_encoder.SF, 1)),
+        )
+        self.doa_act =nn.Tanh()
+    
        
         #Audio Temporal
         self.audio_temporal_encoder = TemporalAudioEncoder(
@@ -358,7 +365,7 @@ class sCLAP_Dual(sCLAP):
         # ============================================================
         self.weights = nn.Parameter(torch.ones([joint_embed_dim]))
 
-        self.temporal_alpha = nn.Parameter(torch.full((joint_embed_dim,), 0.1))
+        self.temporal_alpha = nn.Parameter(torch.tensor(1e-4))
 
         if cfg.ckpt_path is None: 
             self.load_pretrained_weights(cfg.model.audio.ckpt_path[0], 
@@ -393,7 +400,7 @@ class sCLAP_Dual(sCLAP):
 
         audio_sed_embeds = self.audio_sed_projection(audio_output['sed_embedding'])
         audio_doa_embeds = self.audio_doa_projection(audio_output['doa_embedding'])
-        audio_embeds = (audio_sed_embeds + self.weights * audio_doa_embeds)/2
+        audio_embeds = audio_sed_embeds + self.weights * audio_doa_embeds
 
         sed_feature_maps = audio_output['sed_feature_maps']  # (B, C, F, T)
         doa_feature_maps = audio_output['doa_feature_maps']  # (B, C, F, T)
@@ -407,11 +414,12 @@ class sCLAP_Dual(sCLAP):
         T_doa = doa_temporal_feat.shape[-1]
 
 
-        sed_chunck1 = sed_feature_maps[..., :T_sed//2].mean(dim=(-1))
-        sed_chunck2 = sed_feature_maps[..., T_sed//2:].mean(dim=(-1))
+        sed_chunck1 = sed_temporal_feat[..., :T_sed//2].mean(dim=-1)
+        sed_chunck2 = sed_temporal_feat[..., T_sed//2:].mean(dim=-1)
 
-        doa_chunck1 = doa_feature_maps[..., :T_doa//2].mean(dim=(-1))
-        doa_chunck2 = doa_feature_maps[..., T_doa//2:].mean(dim=(-1))
+        doa_chunck1 = doa_temporal_feat[..., :T_doa//2].mean(dim=-1)
+        doa_chunck2 = doa_temporal_feat[..., T_doa//2:].mean(dim=-1)
+        
         chunck1_embeds = self.audio_temporal_projection(sed_chunck1) + \
                         self.weights * self.audio_temporal_projection(doa_chunck1)
         chunck2_embeds = self.audio_temporal_projection(sed_chunck2) + \
@@ -420,7 +428,7 @@ class sCLAP_Dual(sCLAP):
         temporal_seq = torch.stack([chunck1_embeds, chunck2_embeds], dim=1)  # (B, 2, D)
         audio_temporal_embeds = self.audio_temporal_encoder(temporal_seq) 
 
-        audio_triplet_embeds = audio_embeds + self.temporal_alpha.unsqueeze(0) * self.final_audio_projection(audio_temporal_embeds)
+        audio_triplet_embeds = audio_embeds + self.temporal_alpha * self.final_audio_projection(audio_temporal_embeds)
         
         
         # audio_embeds = self.audio_projection(
@@ -430,21 +438,36 @@ class sCLAP_Dual(sCLAP):
         # audio_sed_embeds = F.normalize(audio_sed_embeds, dim=-1)
         # audio_doa_embeds = F.normalize(audio_doa_embeds, dim=-1)
         
-        return [audio_embeds, audio_sed_embeds, audio_doa_embeds, audio_temporal_embeds, audio_triplet_embeds]
+        return [audio_embeds, audio_sed_embeds, audio_doa_embeds,audio_output['doa_feature_maps'],audio_temporal_embeds, audio_triplet_embeds]
 
     def forward(self, audio, text, longer_list=[]):
         """Forward audio and text into the sCLAP"""
 
         audio_embedding = self.get_audio_embedding(audio, longer_list)
         text_embedding = self.get_text_embedding(text)
+        
+        audio_embedding_norm = []
+        for i, x in enumerate(audio_embedding):
+            if i !=3: #doa feature maps
+                audio_embedding_norm.append(F.normalize(x, dim=-1))
+            else:
+                audio_embedding_norm.append(x)
+        
+        audio_embedding = audio_embedding_norm
 
-        audio_embedding = [F.normalize(x, dim=-1) for x in audio_embedding]
         text_embedding = [F.normalize(x, dim=-1) for x in text_embedding]
         
-        doa = self.fc_doa(audio_embedding[-1])
-        if doa.dim() == 2:
-            b = doa.shape[0]
-            doa = doa.view(b, self.n_events, 3)
+        doa_pred = self.audio_doa_conv(audio_embedding[3]).squeeze(2)  # (B, 3, T)
+        doa_pred = self.doa_act(doa_pred)
+        
+        if self.n_events > 1:
+            T = doa_pred.shape[-1]
+            doa_event1 = doa_pred[..., :T//2].mean(dim=-1)
+            doa_event2 = doa_pred[..., T//2:].mean(dim=-1)
+            doa = torch.stack([doa_event1, doa_event2], dim=1)
+        else:
+            doa = doa_pred.mean(dim=-1)  # (B, 3)
+        
 
         return [audio_embedding, text_embedding, doa]
     
