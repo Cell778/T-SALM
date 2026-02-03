@@ -177,7 +177,8 @@ class sCLAPModelModule(BaseModelModule):
                 'Fusion model is not allowed for single branch model'
             self.net = sCLAP_Single(self.cfg)
         elif self.cfg.model.audio.seld_method in ['EINV2']:
-            self.net = sCLAP_Dual(self.cfg)
+            alpha_init = self.cfg.model.audio.get('alpha_init', 0.1)
+            self.net = sCLAP_Dual(self.cfg, alpha_init=alpha_init)
 
         if stage == 'fit' and self.cfg.compile:
             self.logging.info('Compiling model')
@@ -190,6 +191,68 @@ class sCLAPModelModule(BaseModelModule):
                           f"{sum(p.numel() for p in self.net.audio_branch.parameters())}")
         self.logging.info("Number of parameters of the text encoder: " +
                             f"{sum(p.numel() for p in self.net.text_branch.parameters())}")
+        
+    def configure_optimizers(self):
+        """ Configure optimizers and learning rate schedulers for different layers """
+        optimizer_params = self.cfg.model.optimizer
+        lr_scheduler_params = self.cfg.model.lr_scheduler
+        head_lr = self.cfg.model.optimizer.get('head_lr', 1e-3)
+        base_lr = optimizer_params.kwargs.lr  
+    
+        head_names = ['audio_temporal_encoder', 'temporal_alpha']
+        
+        head_params = []
+        backbone_params = []
+        
+        for name, param in self.net.named_parameters():
+            if not param.requires_grad:
+                continue
+            
+       
+            if any(h_name in name for h_name in head_names):
+                head_params.append(param)
+            else:
+                backbone_params.append(param)
+        
+        self.logging.info(f"Optimizer param groups - Backbone: {len(backbone_params)} params (lr={base_lr}), "
+                          f"Head: {len(head_params)} params (lr={head_lr})")
+        
+        params_list = [
+            {'params': backbone_params, 'lr': base_lr},
+            {'params': head_params, 'lr': head_lr}
+        ]
+        
+    
+        from .component.model_module import get_optimizer
+        optimizer = get_optimizer(params_list, optimizer_params.method, lr=base_lr
+                                **{k: v for k, v in optimizer_params.kwargs.items() 
+                                   if k not in ['lr', 'head_lr']})
+        
+        if lr_scheduler_params.method == 'cosinelr':
+            warmup_steps = lr_scheduler_params.warmup_epochs * self.steps['num_steps_per_epoch']
+            from .component.model_module import cosine_lr
+            lr_lambda = lambda step: cosine_lr(step, warmup_steps, self.steps['max_steps'])
+            lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+            scheduler_config = {
+                'scheduler': lr_scheduler,
+                'interval': 'step',
+                'frequency': 1,
+            }
+        elif lr_scheduler_params.method == 'steplr':
+            lr_scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer, 
+                step_size=lr_scheduler_params.step_size, 
+                gamma=lr_scheduler_params.gamma
+            )
+            scheduler_config = {
+                'scheduler': lr_scheduler,
+                'interval': 'epoch',
+                'frequency': 1,
+            }
+        else:
+            raise NotImplementedError
+        
+        return {'optimizer': optimizer, 'lr_scheduler': scheduler_config}
 
     def forward(self, audio, text, longer, normalize=True):
         if audio is None and text is None:
@@ -386,7 +449,7 @@ class sCLAPModelModule(BaseModelModule):
             for idx in range(len(text_features)):
                 text_features[idx] = F.normalize(text_features[idx], dim=-1)
         
-        self.system_output['all_audio_features'].append(audio_features[-1])
+        self.system_output['all_audio_features'].append(audio_features[0])
         # self.system_output['sed_audio_features'].append(audio_features[1])
         # self.system_output['doa_audio_features'].append(audio_features[2])
         self.system_output['all_text_features'].append(text_features[0])

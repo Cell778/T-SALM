@@ -20,9 +20,10 @@ model:
       - ckpts/EINV2-HTSAT-0.514.ckpt
       # - ckpts/mACCDOA-HTSAT-0.567.ckpt
       - ckpts/CLAP/630k-audioset-best.pt
+    alpha_init: 0.1
   text:
     ckpt_path: ckpts/CLAP/630k-audioset-best.pt
-  loss_weights: [1.0, 0.5, 0.2, 0.05, 0.1, 0.05] # [doa, semantic, temporal, spatial, ts, modality]
+  loss_weights: [1.0, 0.5, 0.0, 0.0, 0.5, 0.0] # [doa, semantic, temporal, spatial, ts, modality]
 
 trainer:
   max_epochs: 10

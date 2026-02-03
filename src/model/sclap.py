@@ -340,7 +340,7 @@ class TemporalAudioEncoder(nn.Module):
         self.ln = nn.LayerNorm(embedding_dim)
 
         self.mlp = nn.Sequential(
-            nn.Linear(embedding_dim, embedding_dim),
+            nn.Linear(embedding_dim*num_temporal_steps, embedding_dim),
             nn.GELU(),
             nn.Dropout(0.1),
             nn.Linear(embedding_dim, embedding_dim)
@@ -357,69 +357,17 @@ class TemporalAudioEncoder(nn.Module):
         # x = self.transformer_encoder(x)  # (B, T, D)
         x = self.ln(x)  # (B, T, D)
 
-        x = x.mean(dim=1)  # (B, D)
+        B,T,D = x.shape
+        x = x.reshape(B, T*D)
         temporal_embeds= self.mlp(x)  # (B, D)
 
         return temporal_embeds      
     
- #Bi-directional Cross-Attention Module 
- #Adapted from https://github.com/mrkshllr/BiXT/blob/main/timm/models/bixt.py   
- 
-class CrossAttention(nn.Module):
-    """Cross-Attention between latents and input tokens -- returning the refined latents and tokens as tuple """
-    def __init__(self, dim_sed, dim_doa, dim_attn, num_heads=8, qkv_bias=False, attn_drop=0.1, proj_drop=0.1):
-        super().__init__()
-        assert dim_attn % num_heads == 0, 'dim_attn MUST be divisible by num_heads'
-
-        self.num_heads = num_heads
-        head_dim = dim_attn // num_heads
-        self.scale = head_dim ** -0.5
-        self.dim_attn = dim_attn
-
-        self.proj_sed_in = nn.Linear(dim_sed, dim_attn * 2, bias=qkv_bias)  # 'in-projection' for latents
-        self.proj_doa_in = nn.Linear(dim_doa, dim_attn * 2, bias=qkv_bias)  # 'in-projection' for patches/tokens
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.attn_dropT = nn.Dropout(attn_drop)
-        
-        self.proj_sed_out = nn.Linear(dim_attn, dim_sed)             # 'out-projection' for latents
-        self.proj_drop_sed = nn.Dropout(proj_drop)
-        self.proj_doa_out = nn.Linear(dim_attn, dim_doa)             # 'out-projection' for patches/tokens
-        self.proj_drop_doa = nn.Dropout(proj_drop)
-
-    def forward(self, x_sed, x_doa):
-        B, N_sed, _ = x_sed.shape
-        _, N_doa, _ = x_doa.shape
-        rv_sed = self.proj_sed_in(x_sed).reshape(B, N_sed, 2, self.num_heads,
-                                                    self.dim_attn // self.num_heads).permute(2, 0, 3, 1, 4)
-        r_sed, v_sed = rv_sed.unbind(0)
-        rv_doa = self.proj_doa_in(x_doa).reshape(B, N_doa, 2, self.num_heads,
-                                                    self.dim_attn // self.num_heads).permute(2, 0, 3, 1, 4)
-        r_doa, v_doa = rv_doa.unbind(0)
-        # attention: (q@k.T), and will be multiplied with the value associated with the keys k
-        attn = (r_sed @ r_doa.transpose(-2, -1)) * self.scale  # query from latent, key from patches
-        attn_T = attn.transpose(-2, -1)  # bidirectional attention, associated with the values from the query q
-
-        attn_sed2doa = attn.softmax(dim=-1)  # softmax along patch token dimension
-        attn_doa2sed = attn_T.softmax(dim=-1)  # softmax along latent token dimension
-        attn_sed2doa = self.attn_drop(attn_sed2doa)
-        attn_doa2sed = self.attn_dropT(attn_doa2sed)
-
-        # Retrieve information form the patch tokens via latent query:
-        x_sed_fused = (attn_sed2doa @ v_doa).transpose(1, 2).reshape(B, N_sed, self.dim_attn)
-        x_sed_fused = self.proj_sed_out(x_sed_fused)
-        x_sed_fused = self.proj_drop_sed(x_sed_fused)
-
-        # Likewise, store information from the latents in the patch tokens via transposed attention:
-        x_doa_fused = (attn_doa2sed @ v_sed).transpose(1, 2).reshape(B, N_doa, self.dim_attn)
-        x_doa_fused = self.proj_doa_out(x_doa_fused)
-        x_doa_fused = self.proj_drop_doa(x_doa_fused)
-
-        return x_sed_fused, x_doa_fused
-    
     
 class sCLAP_Dual(sCLAP):
-    def __init__(self, cfg, joint_embed_dim=512, mlp_act='relu'):
+    def __init__(self, cfg, joint_embed_dim=512, mlp_act='relu', alpha_init=0.1):
         super(sCLAP_Dual, self).__init__(cfg, joint_embed_dim, mlp_act)
+        self.alpha_init = alpha_init
 
         ####################### Audio Branch #######################
         if self.audio_backbone == 'HTSAT':
@@ -442,14 +390,6 @@ class sCLAP_Dual(sCLAP):
             nn.BatchNorm2d(cfg.model.audio.output_dim),
             self.mlp_act(),
         )
-        
-        #Conv for doa
-        doa_feat_dim = self.audio_branch.doa_encoder.num_features 
-        self.audio_doa_conv = nn.Sequential(
-            nn.Conv2d(doa_feat_dim, 3, kernel_size=(self.audio_branch.doa_encoder.SF, 1)),
-        )
-        self.doa_act =nn.Tanh()
-    
        
         #Audio Temporal
         self.audio_temporal_encoder = TemporalAudioEncoder(
@@ -462,9 +402,17 @@ class sCLAP_Dual(sCLAP):
 
          #Audio Temporal Projection 
         self.audio_temporal_projection = nn.Sequential(
-            nn.Linear(cfg.model.audio.output_dim, joint_embed_dim),
+            nn.Linear(cfg.model.audio.output_dim*2, joint_embed_dim),
             self.mlp_act(),
             nn.Linear(joint_embed_dim, joint_embed_dim))
+        
+        # SoftPooling 
+        self.audio_softpooling = nn.Sequential(
+            nn.Conv1d(joint_embed_dim, joint_embed_dim//2, kernel_size=1, padding=0, stride=1),
+            self.mlp_act(),
+            nn.Conv1d(joint_embed_dim//2, 2, kernel_size=1, padding=0, stride=1),
+            nn.Softmax(dim=-1)
+        )
         
         #Final Audio Projection
         self.final_audio_projection= nn.Sequential(
@@ -475,17 +423,6 @@ class sCLAP_Dual(sCLAP):
         #Modality Classifier
         self.modality_classifier = ModalityClassifier(joint_embed_dim)
         
-        # Bi-directional Cross-Attention Module
-        self.cross_attention = CrossAttention(
-            dim_sed=cfg.model.audio.output_dim,
-            dim_doa=cfg.model.audio.output_dim,
-            dim_attn=cfg.model.audio.output_dim,
-            num_heads=8,
-            qkv_bias=False,
-            attn_drop=0.1,
-            proj_drop=0.1
-        )
-
         # self.audio_projection = nn.Sequential(
         #     # nn.Linear(cfg.model.audio.output_dim*2, joint_embed_dim),
         #     nn.Linear(joint_embed_dim * 2, joint_embed_dim),
@@ -495,7 +432,7 @@ class sCLAP_Dual(sCLAP):
         # ============================================================
         self.weights = nn.Parameter(torch.ones([joint_embed_dim]))
 
-        self.temporal_alpha = nn.Parameter(torch.tensor(1e-4))
+        self.temporal_alpha = nn.Parameter(torch.tensor(alpha_init))
 
         if cfg.ckpt_path is None: 
             self.load_pretrained_weights(cfg.model.audio.ckpt_path[0], 
@@ -503,7 +440,7 @@ class sCLAP_Dual(sCLAP):
                                          cfg.model.text.ckpt_path)
         for stitch in self.audio_branch.stitch1:
             stitch.weight.data[:, 0, 0].fill_(1)
-            stitch.weight.data[:, 0, 1].zero_()
+            stitch.weight.data[:, 0, 1].zero_() 
             stitch.weight.data[:, 1, 0].zero_()
             stitch.weight.data[:, 1, 1].fill_(1)
         self.audio_branch.stitch1.requires_grad_(True)
@@ -540,14 +477,15 @@ class sCLAP_Dual(sCLAP):
         sed_temporal_feat = self.audio_temporal_conv(sed_feature_maps).squeeze(2)
         doa_temporal_feat = self.audio_temporal_conv(doa_feature_maps).squeeze(2)
         
-        sed_in = sed_temporal_feat.permute(0, 2, 1) 
-        doa_in = doa_temporal_feat.permute(0, 2, 1)  
+        sed_in = sed_temporal_feat.permute(0,2,1)
+        doa_in = doa_temporal_feat.permute(0,2,1)    
+        fused_feat = torch.cat([sed_in, doa_in], dim=-1)
         
-        sed_delta, _ = self.cross_attention(sed_in, doa_in)
+        proj_feat = self.audio_temporal_projection(fused_feat)
         
-        fused_sed = sed_in + sed_delta
-        fused_sed = self.audio_temporal_projection(fused_sed)
-        audio_temporal_embeds = self.audio_temporal_encoder(fused_sed) 
+        attn_weight = self.audio_softpooling(proj_feat.transpose(1,2))
+        event_embeds = torch.bmm(attn_weight, proj_feat)
+        audio_temporal_embeds = self.audio_temporal_encoder(event_embeds) 
 
         audio_triplet_embeds = audio_embeds + self.temporal_alpha * self.final_audio_projection(audio_temporal_embeds)
         
@@ -559,36 +497,20 @@ class sCLAP_Dual(sCLAP):
         # audio_sed_embeds = F.normalize(audio_sed_embeds, dim=-1)
         # audio_doa_embeds = F.normalize(audio_doa_embeds, dim=-1)
         
-        return [audio_embeds, audio_sed_embeds, audio_doa_embeds,audio_output['doa_feature_maps'],audio_temporal_embeds, audio_triplet_embeds]
+        return [audio_embeds, audio_sed_embeds, audio_doa_embeds,audio_temporal_embeds, audio_triplet_embeds]
 
     def forward(self, audio, text, longer_list=[]):
-        """Forward audio and text into the sCLAP"""
-
+        
         audio_embedding = self.get_audio_embedding(audio, longer_list)
         text_embedding = self.get_text_embedding(text)
-        
-        audio_embedding_norm = []
-        for i, x in enumerate(audio_embedding):
-            if i !=3: #doa feature maps
-                audio_embedding_norm.append(F.normalize(x, dim=-1))
-            else:
-                audio_embedding_norm.append(x)
-        
-        audio_embedding = audio_embedding_norm
 
+        audio_embedding = [F.normalize(x, dim=-1) for x in audio_embedding]
         text_embedding = [F.normalize(x, dim=-1) for x in text_embedding]
         
-        doa_pred = self.audio_doa_conv(audio_embedding[3]).squeeze(2)  # (B, 3, T)
-        doa_pred = self.doa_act(doa_pred)
-        
-        if self.n_events > 1:
-            T = doa_pred.shape[-1]
-            doa_event1 = doa_pred[..., :T//2].mean(dim=-1)
-            doa_event2 = doa_pred[..., T//2:].mean(dim=-1)
-            doa = torch.stack([doa_event1, doa_event2], dim=1)
-        else:
-            doa = doa_pred.mean(dim=-1)  # (B, 3)
-        
+        doa = self.fc_doa(audio_embedding[2])
+        if doa.dim() == 2:
+            b = doa.shape[0]
+            doa = doa.view(b, self.n_events, 3)
 
         return [audio_embedding, text_embedding, doa]
     
