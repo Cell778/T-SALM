@@ -198,24 +198,29 @@ class sCLAPDataset(BaseDataset):
                     raise KeyError(f"Need >=2 audio_segments in {metafile_path}")
                 seg0_meta = segments[0].get('metadata', {})
                 seg1_meta = segments[1].get('metadata', {})
-                c0 = seg0_meta.get('caption', None)
-                c1 = seg1_meta.get('caption', None)
+                c0 = seg0_meta.get('spatialized_caption', None)
+                c1 = seg1_meta.get('spatialized_caption', None)
                 if not isinstance(c0, list) or not isinstance(c1, list) or len(c0) == 0 or len(c1) == 0:
-                    raise KeyError(f"Missing/invalid caption list in audio_segments[0/1].metadata of {metafile_path}")
+                    raise KeyError(f"Missing/invalid spatialized_caption list in audio_segments[0/1].metadata of {metafile_path}")
 
                 k = min(len(c0), len(c1), len(temporal_spatial_caption))
                 caption = []
+                c0_list = []
+                c1_list = []
+                
+                # User requested to use the pre-existing spatialized captions directly from metadata
+                # and avoid manual reconstruction/concatenation.
                 for i in range(k):
-                    a = str(c0[i]).strip().rstrip('.!?')
-                    b = str(c1[i]).strip()
-                    out = f"{a}, then {b}"
-                    out = out.strip()
-                    if out and out[-1] not in '.!?':
-                        out += '.'
-                    caption.append(out)
+                    # We simply take the i-th caption from each list
+                    # temporal_spatial_caption is the full concatenated one
+                    # c0 is the first segment's spatialized caption
+                    # c1 is the second segment's spatialized caption
+                    caption.append(temporal_spatial_caption[i])
+                    c0_list.append(c0[i])
+                    c1_list.append(c1[i])
 
-                spatialized_caption = temporal_spatial_caption
-
+                spatialized_caption = caption 
+                
                 n_events = getattr(self.cfg.model, 'n_events', 2)
                 if len(segments) < n_events:
                     raise KeyError(f"Need >= {n_events} audio_segments in {metafile_path}")
@@ -259,17 +264,69 @@ class sCLAPDataset(BaseDataset):
 
             if cart_doa is None:
                 cart_doa = torch.stack([x, y, z], dim=0).unsqueeze(0)
-
-            return caption, spatialized_caption, direction, cart_doa
+            
+            # Check if c0_list/c1_list were created (only for sClotho/AudioCaps logic block)
+            if 'c0_list' not in locals(): c0_list = None
+            if 'c1_list' not in locals(): c1_list = None
+            
+            return caption, spatialized_caption, direction, cart_doa, c0_list, c1_list
 
         audioitem = self.audiofiles[idx]
         metaitem = self.metafiles[idx] if len(self.metafiles) > idx else None
         is_triplet = isinstance(audioitem, (tuple, list)) and len(audioitem) == 3
 
+        ori_audio_duration = 0.0
+
         # -------- audio --------
         if not is_triplet:
             audiofile = audioitem
             audio, sr = torchaudio.load(audiofile)
+            
+            # Anchor Pass Preparation (Step 1): Initialize anchor containers
+            # Default to zeros if we cannot split or dataset doesn't support it
+            # We determine truncation logic from audio size later in _process_one_audio
+            # But here we need to slice BEFORE processing.
+            anchor_A_sed = None
+            anchor_A_doa = None
+            anchor_B_sed = None
+            anchor_B_doa = None
+            
+            # Check for split duration in metadata first to handle slicing
+            if self.dataset_name in ['sClotho', 'sAudioCaps', 'sFreesound'] or 'ColRIR' in self.dataset_name:
+                 # We need to peek at metadata to get duration for splitting raw audio
+                 # This logic duplicates some of the metadata loading below, but it's necessary for raw audio slicing
+                 temp_metafile = str(audiofile).replace('/audio/', '/metadata/').replace('.flac', '.json')
+                 if metaitem is not None: temp_metafile = str(metaitem)
+                 
+                 try:
+                     with open(temp_metafile, 'r') as f:
+                        temp_md = json.load(f)
+                     if 'audio_segments' in temp_md and len(temp_md['audio_segments']) >= 2:
+                         ori_audio_duration = temp_md['audio_segments'][0].get('duration', 0.0)
+                         
+                         if ori_audio_duration > 0:
+                             # Slice Raw Audio
+                             split_idx = int(ori_audio_duration * sr)
+                             if split_idx < audio.shape[-1]:
+                                 raw_A = audio[:, :split_idx]
+                                 raw_B = audio[:, split_idx:]
+                                 
+                                 # Process anchors independently
+                                 anchor_A_sed, anchor_A_doa, _ = _process_one_audio(raw_A, sr)
+                                 anchor_B_sed, anchor_B_doa, _ = _process_one_audio(raw_B, sr)
+                 except Exception:
+                     # If metadata fails or IO error, we just skpp anchor generation
+                     pass
+
+            if anchor_A_sed is None:
+                # Fallback shapes based on chunklen (assuming mono or stereo input depending on load)
+                # We need to match the output shape of _process_one_audio
+                # Let's perform a dummy process to get shape
+                dummy_sed, dummy_doa, _ = _process_one_audio(torch.zeros(1, int(self.chunklen)), sr)
+                anchor_A_sed = torch.zeros_like(dummy_sed)
+                anchor_A_doa = torch.zeros_like(dummy_doa)
+                anchor_B_sed = torch.zeros_like(dummy_sed)
+                anchor_B_doa = torch.zeros_like(dummy_doa)
 
             # semantic-only eval branch for Clotho/AudioCaps
             if self.dataset_type == 'test' and self.dataset_name in ['Clotho', 'AudioCaps']:
@@ -323,7 +380,7 @@ class sCLAPDataset(BaseDataset):
                 metafile = str(audiofile).replace('/audio/', '/metadata/').replace('.flac', '.json')
                 if metaitem is not None:
                     metafile = str(metaitem)
-                caption, spatialized_caption, direction, cart_doa = _parse_caption_and_doa(metafile)
+                caption, spatialized_caption, direction, cart_doa, c0_list, c1_list = _parse_caption_and_doa(metafile)
             else:
                 # Triplet: each audio reads its OWN metadata json.
                 if isinstance(metaitem, (tuple, list)) and len(metaitem) == 3:
@@ -340,6 +397,7 @@ class sCLAPDataset(BaseDataset):
                 spatial_caps = [p[1] for p in parsed]
                 directions = [p[2] for p in parsed]
                 cart_doas = [p[3] for p in parsed]
+                # Ignore c0_list/c1_list for triplet mode for now
         elif self.dataset_name in ['Clotho', 'AudioCaps'] and self.dataset_type == 'test':
             if -22.5 < azi <= 22.5: direction = 'south'
             elif 22.5 < azi <= 67.5: direction = 'southeast'
@@ -363,11 +421,21 @@ class sCLAPDataset(BaseDataset):
                 spatialized_caption = spatialized_caption[cap_i]
                 text = self.tokenize(caption)
                 text_comb = self.tokenize(spatialized_caption)
+                
+                # Tokenize sub-captions for Local Alignment
+                text_c0 = None
+                text_c1 = None
+                if c0_list is not None and c1_list is not None:
+                     text_c0 = self.tokenize(c0_list[cap_i])
+                     text_c1 = self.tokenize(c1_list[cap_i])
             else:
                 text = [self.tokenize(t) for t in caption]
                 text_comb = [self.tokenize(t) for t in spatialized_caption]
                 text = {k: torch.stack([t[k] for t in text], dim=0) for k in text[0].keys()}
                 text_comb = {k: torch.stack([t[k] for t in text_comb], dim=0) for k in text_comb[0].keys()}
+                
+                text_c0 = None # Not handled for validation yet
+                text_c1 = None
         else:
             if self.dataset_type == 'train':
                 min_len = min(len(c) for c in captions)
@@ -403,10 +471,15 @@ class sCLAPDataset(BaseDataset):
             direction = directions
             cart_doa = torch.stack(cart_doas, dim=0)
 
+        # -------- Sample Dictionary Construction --------
         sample = {
             'audiofile': audiofile.stem,
             'audio4sed': audio1,
             'audio4doa': audio2,
+            'audio_A_sed': anchor_A_sed,
+            'audio_A_doa': anchor_A_doa,
+            'audio_B_sed': anchor_B_sed,
+            'audio_B_doa': anchor_B_doa,
             'spatialized_caption': spatialized_caption,
             'ori_caption': caption,
             'text_comb': text_comb,
@@ -415,6 +488,9 @@ class sCLAPDataset(BaseDataset):
                         if isinstance(direction, (list, tuple)) else self.direction_label_dict[direction]),
             'cart_doa': cart_doa,
             'longer': longer,
+            'ori_audio_duration': ori_audio_duration,
+            'text_c0': text_c0, 
+            'text_c1': text_c1,
         }
         return sample
 

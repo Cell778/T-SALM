@@ -9,6 +9,7 @@ from rotary_embedding_torch import RotaryEmbedding
 from .component.model_utilities import MLPLayers
 from .component.seld import EINV2_HTSAT
 from .component.htsat import HTSAT_Swin_Transformer
+from .attention_pooling import MultiGrainAttentionPooling
 
 torch.serialization.add_safe_globals([numpy.core.multiarray.scalar])
 
@@ -368,6 +369,8 @@ class sCLAP_Dual(sCLAP):
     def __init__(self, cfg, joint_embed_dim=512, mlp_act='relu', alpha_init=0.1):
         super(sCLAP_Dual, self).__init__(cfg, joint_embed_dim, mlp_act)
         self.alpha_init = alpha_init
+        self.softmax_temp = getattr(cfg.model.audio, "softpooling_temp", 1.0)
+        self.register_buffer('_attn_weight_cache', None)
 
         ####################### Audio Branch #######################
         if self.audio_backbone == 'HTSAT':
@@ -384,12 +387,6 @@ class sCLAP_Dual(sCLAP):
             self.mlp_act(),
             nn.Linear(joint_embed_dim, joint_embed_dim))
         
-        #Conv for temporal audio
-        self.audio_temporal_conv = nn.Sequential(
-            nn.Conv2d(cfg.model.audio.output_dim, cfg.model.audio.output_dim, kernel_size=(self.audio_branch.sed_encoder.SF, 1)),
-            nn.BatchNorm2d(cfg.model.audio.output_dim),
-            self.mlp_act(),
-        )
        
         #Audio Temporal
         self.audio_temporal_encoder = TemporalAudioEncoder(
@@ -402,17 +399,19 @@ class sCLAP_Dual(sCLAP):
 
          #Audio Temporal Projection 
         self.audio_temporal_projection = nn.Sequential(
-            nn.Linear(cfg.model.audio.output_dim*2, joint_embed_dim),
+            nn.Linear(cfg.model.audio.output_dim, joint_embed_dim),
             self.mlp_act(),
             nn.Linear(joint_embed_dim, joint_embed_dim))
         
-        # SoftPooling 
-        self.audio_softpooling = nn.Sequential(
-            nn.Conv1d(joint_embed_dim, joint_embed_dim//2, kernel_size=1, padding=0, stride=1),
-            self.mlp_act(),
-            nn.Conv1d(joint_embed_dim//2, 2, kernel_size=1, padding=0, stride=1),
-            nn.Softmax(dim=-1)
-        )
+        # Attentive Pooling (Multi-Grain Hierarchical Consistency)
+        self.attn_pooling = MultiGrainAttentionPooling(cfg.model.audio.output_dim)
+        
+        # # SoftPooling 
+        # self.audio_softpooling = nn.Sequential(
+        #     nn.Conv1d(cfg.model.audio.output_dim + 1, joint_embed_dim//2, kernel_size=1, padding=0, stride=1),
+        #     self.mlp_act(),
+        #     nn.Conv1d(joint_embed_dim//2, 2, kernel_size=1, padding=0, stride=1),
+        # )
         
         #Final Audio Projection
         self.final_audio_projection= nn.Sequential(
@@ -471,21 +470,79 @@ class sCLAP_Dual(sCLAP):
 
         sed_feature_maps = audio_output['sed_feature_maps']  # (B, C, F, T)
         doa_feature_maps = audio_output['doa_feature_maps']  # (B, C, F, T)
+        
+        # Collapse Frequency dimension to get time sequence
+        sed_temporal_feat = sed_feature_maps.mean(dim=2)  # (B, C, T)
+        doa_temporal_feat = doa_feature_maps.mean(dim=2)  # (B, C, T)
 
-        B, C, F, T = sed_feature_maps.shape
+        sed_in = sed_temporal_feat.permute(0, 2, 1) # (B, T, C)
+        doa_in = doa_temporal_feat.permute(0, 2, 1) # (B, T, C)
 
-        sed_temporal_feat = self.audio_temporal_conv(sed_feature_maps).squeeze(2)
-        doa_temporal_feat = self.audio_temporal_conv(doa_feature_maps).squeeze(2)
+        B, T, C = sed_in.shape
+        device = sed_in.device
         
-        sed_in = sed_temporal_feat.permute(0,2,1)
-        doa_in = doa_temporal_feat.permute(0,2,1)    
-        fused_feat = torch.cat([sed_in, doa_in], dim=-1)
+        # Time-based splitting using 'ori_audio_duration'
+        # Dynamically calculate total duration from input tensor dimensions
+        # audio4sed shape: (B, C, F, T_in)
+        T_input = data['audio4sed'].shape[-1] 
+        sr = getattr(self.cfg.data, 'sample_rate', 24000)
+        hop_len = getattr(self.cfg.data, 'hoplen', 240)
+        total_duration = T_input * hop_len / sr
         
-        proj_feat = self.audio_temporal_projection(fused_feat)
+        split_times = data.get('ori_audio_duration', None)
+
+        if split_times is not None:
+             if not isinstance(split_times, torch.Tensor):
+                 split_times = torch.tensor(split_times, device=device)
+             else:
+                 split_times = split_times.to(device)
+             
+             # Calculate indices for splitting
+             split_indices = (split_times / total_duration * T).long()
+             split_indices = torch.clamp(split_indices, min=0, max=T)
+
+             # Create masks for first and second event
+             time_indices = torch.arange(T, device=device).unsqueeze(0) # (1, T)
+             mask1 = (time_indices < split_indices.unsqueeze(1)).float() # (B, T)
+             mask2 = 1.0 - mask1
+             
+             # Normalize masks to sum to 1 for pooling (avoid div by zero)
+             mask1_sum = mask1.sum(dim=1, keepdim=True).clamp(min=1e-6)
+             mask2_sum = mask2.sum(dim=1, keepdim=True).clamp(min=1e-6)
+             
+             # mask1_norm = mask1 / mask1_sum
+             # mask2_norm = mask2 / mask2_sum
+             
+             # attn_weight = torch.stack([mask1_norm, mask2_norm], dim=1) # (B, 2, T)
+        else:
+            # Fallback to equal split if no duration provided
+            mid = T // 2
+            mask1 = torch.zeros((B, T), device=device)
+            mask1[:, :mid] = 1.0
+            mask2 = 1.0 - mask1
+            
+            mask1_norm = mask1 # / mid (using attention now, no need to normalize strictly here, but kept for legacy)
+            mask2_norm = mask2 # / (T - mid)
+            # attn_weight = torch.stack([mask1_norm, mask2_norm], dim=1)
+
+        # self._attn_weight_cache = attn_weight.detach()
         
-        attn_weight = self.audio_softpooling(proj_feat.transpose(1,2))
-        event_embeds = torch.bmm(attn_weight, proj_feat)
+        # sed_pooled = torch.bmm(attn_weight, sed_in)  # (B, 2, C)
+        # doa_pooled = torch.bmm(attn_weight, doa_in)  # (B, 2, C)
+        
+        # Use Attention Pooling instead of Mean Pooling
+        sed_pooled, w1_sed, w2_sed = self.attn_pooling(sed_in, mask1, mask2)
+        doa_pooled, w1_doa, w2_doa = self.attn_pooling(doa_in, mask1, mask2)
+
+        # Update visualization cache with actual Attention Weights
+        # w1_sed/w2_sed shape: (B, T) -> Stack to (B, 2, T)
+        self._attn_weight_cache = torch.stack([w1_sed, w2_sed], dim=1).detach()
+
+        sed_embeds = self.audio_temporal_projection(sed_pooled)
+        doa_embeds = self.audio_temporal_projection(doa_pooled)
+        event_embeds = sed_embeds + self.weights * doa_embeds 
         audio_temporal_embeds = self.audio_temporal_encoder(event_embeds) 
+
 
         audio_triplet_embeds = audio_embeds + self.temporal_alpha * self.final_audio_projection(audio_temporal_embeds)
         
@@ -497,7 +554,7 @@ class sCLAP_Dual(sCLAP):
         # audio_sed_embeds = F.normalize(audio_sed_embeds, dim=-1)
         # audio_doa_embeds = F.normalize(audio_doa_embeds, dim=-1)
         
-        return [audio_embeds, audio_sed_embeds, audio_doa_embeds,audio_temporal_embeds, audio_triplet_embeds]
+        return [audio_embeds, audio_sed_embeds, audio_doa_embeds, audio_temporal_embeds, audio_triplet_embeds, event_embeds]
 
     def forward(self, audio, text, longer_list=[]):
         

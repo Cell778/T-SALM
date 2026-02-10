@@ -161,7 +161,8 @@ class sCLAPModelModule(BaseModelModule):
             'loss_logit_temporal': MeanMetric(),
             'loss_logit_spatial': MeanMetric(),
             'loss_logit_ts': MeanMetric(),
-            'loss_modality': MeanMetric()
+            'loss_modality': MeanMetric(),
+            'loss_consistency': MeanMetric(),
             }
         )
     
@@ -196,7 +197,7 @@ class sCLAPModelModule(BaseModelModule):
         """ Configure optimizers and learning rate schedulers for different layers """
         optimizer_params = self.cfg.model.optimizer
         lr_scheduler_params = self.cfg.model.lr_scheduler
-        head_lr = self.cfg.model.optimizer.get('head_lr', 1e-3)
+        head_lr = self.cfg.model.optimizer.get('head_lr', 1e-4)
         base_lr = optimizer_params.kwargs.lr  
     
         head_names = ['audio_temporal_encoder', 'temporal_alpha']
@@ -224,7 +225,7 @@ class sCLAPModelModule(BaseModelModule):
         
     
         from .component.model_module import get_optimizer
-        optimizer = get_optimizer(params_list, optimizer_params.method, lr=base_lr
+        optimizer = get_optimizer(params_list, optimizer_params.method, lr=base_lr,
                                 **{k: v for k, v in optimizer_params.kwargs.items() 
                                    if k not in ['lr', 'head_lr']})
         
@@ -333,8 +334,12 @@ class sCLAPModelModule(BaseModelModule):
         loss_weights = self.cfg.model.loss_weights
         if isinstance (loss_weights, list):
             w_modality = loss_weights[5] if len(loss_weights) > 5 else 0.05
+            w_consistency = loss_weights[6] if len(loss_weights) > 6 else 0.1
+            w_local_align = loss_weights[7] if len(loss_weights) > 7 else 0.1
         else:
             w_modality = 0.05
+            w_consistency = 0.1
+            w_local_align = 0.1
 
         modality_ramp_epochs = 4
         if modality_ramp_epochs <= 0:
@@ -361,12 +366,100 @@ class sCLAPModelModule(BaseModelModule):
             batch_sample['cart_doa'] = self.all_gather(
                 batch_sample['cart_doa'], sync_grads=True
                 ).flatten(0, 1)
+
+        # Multi-Grain Hierarchical Consistency (Step 3)
+        consistency_loss = 0.0
+        using_consistency = False
+        if 'audio_A_sed' in batch_sample and batch_sample['audio_A_sed'] is not None:
+             using_consistency = True            
+             # audio_A
+             a_sed = self.af_extractor1(batch_sample['audio_A_sed'])
+             a_doa = self.af_extractor2(batch_sample['audio_A_doa'])
+             data_A = {'audio4sed': a_sed, 'audio4doa': a_doa}
+             
+             # audio_B
+             b_sed = self.af_extractor1(batch_sample['audio_B_sed'])
+             b_doa = self.af_extractor2(batch_sample['audio_B_doa'])
+             data_B = {'audio4sed': b_sed, 'audio4doa': b_doa}
+             
+             out_A = self.net.get_audio_embedding(data_A)
+             out_B = self.net.get_audio_embedding(data_B)
+             
+             # Use index 0 (first event slot) as the representation for the single-event anchor
+             feat_A_gt = out_A[5][:, 0, :].detach()
+             feat_B_gt = out_B[5][:, 0, :].detach()
+             
+             # audio_features is [embeds, sed, doa, temp, trip, event_embeds]
+             mix_events = audio_features[5] 
+             
+             loss_cons_A = F.mse_loss(mix_events[:, 0, :], feat_A_gt)
+             loss_cons_B = F.mse_loss(mix_events[:, 1, :], feat_B_gt)
+             
+             consistency_loss = loss_cons_A + loss_cons_B
+             
+             if 'loss_consistency' in self.train_loss:
+                self.train_loss['loss_consistency'].update(consistency_loss)
             
         # text_features.append(text_feature_doa)
         total_loss = self.loss(audio_features, text_features, 
                                self.net.logit_scale,
                                [doa, batch_sample['cart_doa']],
                                epoch_it=self.current_epoch, is_triplet=is_triplet)
+            
+        # Local Alignment Loss (Step 4 from PDF)
+        # Contrastive loss between (Event 1 Aud <-> Text 1) and (Event 2 Aud <-> Text 2)
+        # We treat them as independent data points in a batch.
+            
+        # 1. Get Text Features for Sub-captions (c0, c1)
+        # We assume batch_sample has 'text_c0' and 'text_c1' if available from dataloader
+        local_alignment_loss = 0.0
+        if 'text_c0' in batch_sample and batch_sample['text_c0'] is not None and batch_sample['text_c0'] is not [None]:
+             # Note: The dataloader might pass None if not available.
+             # Check if the first element is valid (since collate_fn might make a list of Nones)
+             # Actually, default_collate might stack dictionaries.
+             # Let's check validity rigorously.
+             valid_local = True
+             try:
+                 # Check if text_c0 keys exist (input_ids)
+                 if not ('input_ids' in batch_sample['text_c0']): valid_local = False
+             except: valid_local = False
+                 
+             if valid_local:
+                 t_c0 = self.net.encode_text(batch_sample['text_c0'])
+                 t_c1 = self.net.encode_text(batch_sample['text_c1'])
+                 t_c0 = F.normalize(t_c0, dim=-1)
+                 t_c1 = F.normalize(t_c1, dim=-1)
+                 
+                 # 2. Get Audio Features for Events (from Mixture)
+                 a_ev1 = mix_events[:, 0, :] # Event 1
+                 a_ev2 = mix_events[:, 1, :] # Event 2
+                 a_ev1 = F.normalize(a_ev1, dim=-1)
+                 a_ev2 = F.normalize(a_ev2, dim=-1)
+                 
+                 # 3. Calculate Contrastive Loss
+                 a_local = torch.cat([a_ev1, a_ev2], dim=0) # (2B, D)
+                 t_local = torch.cat([t_c0, t_c1], dim=0)   # (2B, D)
+                 
+                 logit_scale = self.net.logit_scale.exp()
+                 logits_per_audio = logit_scale * a_local @ t_local.t()
+                 logits_per_text = logits_per_audio.t()
+                 
+                 labels = torch.arange(len(a_local), device=self.device)
+                 
+                 loss_a = F.cross_entropy(logits_per_audio, labels)
+                 loss_t = F.cross_entropy(logits_per_text, labels)
+                 local_alignment_loss = (loss_a + loss_t) / 2
+                 
+                 if 'loss_local_align' not in self.train_loss:
+                     self.train_loss['loss_local_align'] = MeanMetric()
+                 self.train_loss['loss_local_align'].update(local_alignment_loss)
+                     
+                 # Add Local Alignment Loss to total loss
+                 total_loss['total_loss'] = total_loss['total_loss'] + w_local_align * local_alignment_loss
+
+        # Add Consistency Loss (Step 3)
+        total_loss['total_loss'] = total_loss['total_loss'] + w_consistency * consistency_loss
+        
         total_loss['total_loss'] = total_loss['total_loss'] + w_modality_eff * modality_loss
         total_loss['loss_modality'] = modality_loss
 
@@ -381,6 +474,20 @@ class sCLAPModelModule(BaseModelModule):
             writer.add_scalar("temporal_alpha/mean", float(vals.mean()), global_step=self.global_step)
         # 向量直方图（如果 temporal_alpha 是向量）
             writer.add_histogram("temporal_alpha/hist", vals, global_step=self.global_step)
+            
+        attn_weight = self.net._attn_weight_cache
+        
+        if batch_idx % 100 == 0 and attn_weight is not None:
+            self.logger.experiment.add_histogram(
+                'attn_weight_seg0', 
+                attn_weight[:, 0, :].flatten(), 
+                global_step=self.global_step
+        )
+            self.logger.experiment.add_histogram(
+                'attn_weight_seg1', 
+                attn_weight[:, 1, :].flatten(), 
+                global_step=self.global_step
+        )
 
         return total_loss['total_loss']
 
@@ -390,6 +497,75 @@ class sCLAPModelModule(BaseModelModule):
         self.net.logit_scale.clamp_(0, np.log(100))
         if self.cfg.model.mlp_loss:
             raise NotImplementedError
+
+    def on_train_epoch_end(self):
+        """Record attention weight heatmap at the end of each epoch to visualize splitting"""
+        super().on_train_epoch_end()
+        
+        attn_weight = getattr(self.net, '_attn_weight_cache', None)
+        
+        if attn_weight is None:
+            return
+        
+        import matplotlib
+        matplotlib.use('Agg')  
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        
+        weights_np = attn_weight.detach().cpu().numpy()
+        batch_size, num_segs, time_steps = weights_np.shape
+
+     
+        fig_heat, axes = plt.subplots(2, 1, figsize=(12, 8))
+      
+        center_of_mass = (weights_np[:, 0, :] * np.arange(time_steps)).sum(axis=1)
+        sort_idx = np.argsort(center_of_mass)
+        sorted_weights = weights_np[sort_idx]
+        
+        # Seg 0 Heatmap
+        im0 = axes[0].imshow(sorted_weights[:, 0, :], aspect='auto', cmap='viridis', vmin=0, vmax=1)
+        axes[0].set_title(f'Segment 0 (Event 1) - Sorted by Cut Position [Epoch {self.current_epoch}]')
+        axes[0].set_ylabel('Sorted Batch Index')
+        plt.colorbar(im0, ax=axes[0])
+        
+        # Seg 1 Heatmap
+        im1 = axes[1].imshow(sorted_weights[:, 1, :], aspect='auto', cmap='viridis', vmin=0, vmax=1)
+        axes[1].set_title(f'Segment 1 (Event 2) - Sorted by Cut Position [Epoch {self.current_epoch}]')
+        axes[1].set_ylabel('Sorted Batch Index')
+        axes[1].set_xlabel('Time Steps')
+        plt.colorbar(im1, ax=axes[1])
+        
+        plt.tight_layout()
+        if hasattr(self.logger, "experiment"):
+            self.logger.experiment.add_figure('Attn_Heatmap_Sorted', fig_heat, global_step=self.current_epoch)
+        plt.close(fig_heat)
+
+    
+        fig_curve, axes_curve = plt.subplots(2, 2, figsize=(12, 8))
+        axes_curve = axes_curve.flatten()
+        
+
+        samples_to_plot = min(4, batch_size)
+        
+        for i in range(samples_to_plot):
+            ax = axes_curve[i]
+           
+            ax.plot(weights_np[i, 0, :], color='red', label='Seg0 (Event 1)', linewidth=2)
+          
+            ax.plot(weights_np[i, 1, :], color='blue', label='Seg1 (Event 2)', linewidth=2, linestyle='--')
+            
+            ax.set_ylim(-0.1, 1.1)
+            ax.set_title(f'Sample {i} Splitting')
+            ax.set_xlabel('Time Steps')
+            ax.set_ylabel('Weight')
+            if i == 0: 
+                ax.legend()
+            
+        plt.tight_layout()
+        if hasattr(self.logger, "experiment"):
+            self.logger.experiment.add_figure('Attn_Split_Curves', fig_curve, global_step=self.current_epoch)
+        plt.close(fig_curve)
 
     ############################## Validation functions ##############################
     def on_validation_start(self):
@@ -449,7 +625,12 @@ class sCLAPModelModule(BaseModelModule):
             for idx in range(len(text_features)):
                 text_features[idx] = F.normalize(text_features[idx], dim=-1)
         
-        self.system_output['all_audio_features'].append(audio_features[0])
+        # audio_features list is: [mix, sed, doa, temp, trip, event_embeds]
+        # We generally use the triplet embedding (index 4) or temporal embedding (index 3) for retrieval
+        # Previously index -1 was used, which was audio_triplet_embeds (when length was 5)
+        # Now length is 6, so index -1 is event_embeds (Not what we want for retrieval)
+        # We really want audio_triplet_embeds, which is index 4.
+        self.system_output['all_audio_features'].append(audio_features[4]) 
         # self.system_output['sed_audio_features'].append(audio_features[1])
         # self.system_output['doa_audio_features'].append(audio_features[2])
         self.system_output['all_text_features'].append(text_features[0])

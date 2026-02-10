@@ -104,7 +104,9 @@ class sCLAPLoss:
             loss_doa = (1 - cos_sim).mean()
         
         device = audio_features[0].device
-        audio_feature_comb, audio_feature_sed, audio_feature_doa, audio_feature_temporal, audio_feature_triplet = audio_features
+        # Unpack 6 items (including event_embeds at the end)
+        # Note: event_embeds is used in training_step for consistency loss, not here for contrastive loss
+        audio_feature_comb, audio_feature_sed, audio_feature_doa, audio_feature_temporal, audio_feature_triplet, _ = audio_features
         # text_feature_comb, text_feature_sed, text_feature_doa = text_features
         text_feature_comb, text_feature_sed = text_features
         
@@ -165,7 +167,7 @@ class sCLAPLoss:
                 )
             spatial_offsets = torch.tensor([0, 1, 2], device=device, dtype=torch.long)  # pos, neg_t, neg_s
             spatial_idx = (pos_idx[:, None] + spatial_offsets[None, :]).reshape(-1)  # (3B,)
-            audio_comb_spatial = audio_feature_comb[spatial_idx]
+            audio_comb_spatial = audio_feature_triplet[spatial_idx]
             text_comb_spatial = text_feature_comb[spatial_idx]
             logits_per_audio_comb = logit_scale * (audio_comb_spatial @ text_comb_spatial.T)  # (3B, 3B)
             logits_per_text_comb = logits_per_audio_comb.T
@@ -290,5 +292,4 @@ class sCLAPLoss:
                 + w_sem_eff * loss_logit_semantic + w_doa * loss_doa + w_spatial_eff * loss_logit_spatial
                 + w_temp_eff * loss_logit_temporal
                 + w_ts_eff * loss_logit_ts
-
         }
