@@ -478,16 +478,47 @@ class sCLAP_Dual(sCLAP):
         sed_in = sed_temporal_feat.permute(0, 2, 1) # (B, T, C)
         doa_in = doa_temporal_feat.permute(0, 2, 1) # (B, T, C)
 
+        real_total_duration = data.get('total_audio_duration', None)
+
+        # Handling Fusion for Consistency Calculation
+        if self.enable_fusion and sed_in.shape[0] % 4 == 0:
+             real_B = sed_in.shape[0] // 4
+             # Reshape to (B, 4, T, C)
+             sed_in = sed_in.view(real_B, 4, -1, sed_in.shape[-1])
+             doa_in = doa_in.view(real_B, 4, -1, doa_in.shape[-1])
+             
+             # Use Global Chunk (Index 0) if total_duration available (covers full audio boundary)
+             # Otherwise fallback to first local chunk (Index 1)
+             if real_total_duration is not None:
+                sed_in = sed_in[:, 0, :, :]
+                doa_in = doa_in[:, 0, :, :]
+             else:
+                sed_in = sed_in[:, 1, :, :]
+                doa_in = doa_in[:, 1, :, :]
+             
+             # Also Pool the embeddings for Retrieval
+             audio_sed_embeds = audio_sed_embeds.view(real_B, 4, -1)
+             audio_doa_embeds = audio_doa_embeds.view(real_B, 4, -1)
+             
+             # Use Global (Index 0) for Retrieval Alignment
+             audio_sed_embeds = audio_sed_embeds[:, 0, :]
+             audio_doa_embeds = audio_doa_embeds[:, 0, :]
+
+        audio_embeds = audio_sed_embeds + self.weights * audio_doa_embeds
+
         B, T, C = sed_in.shape
         device = sed_in.device
         
         # Time-based splitting using 'ori_audio_duration'
         # Dynamically calculate total duration from input tensor dimensions
         # audio4sed shape: (B, C, F, T_in)
-        T_input = data['audio4sed'].shape[-1] 
+        T_input = sed_in.shape[1] # Use the actual T from the sliced input
         sr = getattr(self.cfg.data, 'sample_rate', 24000)
         hop_len = getattr(self.cfg.data, 'hoplen', 240)
-        total_duration = T_input * hop_len / sr
+        
+        # If using Fusion/Slicing, the T represents the chunk length (10s)
+        # We must align total_duration calculation
+        chuck_duration = T_input * hop_len / sr
         
         split_times = data.get('ori_audio_duration', None)
 
@@ -496,9 +527,37 @@ class sCLAP_Dual(sCLAP):
                  split_times = torch.tensor(split_times, device=device)
              else:
                  split_times = split_times.to(device)
+            
+             # Handle batch dimension mismatch if Fusion was used (split_times is B*4, sed_in is B)
+             if self.enable_fusion and split_times.shape[0] > B:
+                 real_B_split = split_times.shape[0] // 4
+                 if real_B_split == B:
+                     # Just take one per group (assuming duplicated or identical for the file)
+                     split_times = split_times.view(real_B_split, 4)[:, 0]
+
+             if real_total_duration is not None:
+                 if not isinstance(real_total_duration, torch.Tensor):
+                     real_total_duration = torch.tensor(real_total_duration, device=device)
+                 else:
+                     real_total_duration = real_total_duration.to(device)
+                 
+                 if self.enable_fusion and real_total_duration.shape[0] > B:
+                      real_total_duration = real_total_duration.view(-1, 4)[:, 0]
+                 
+                 # Mask based on ratio of total duration (Global Chunk)
+                 split_ratio = split_times / (real_total_duration + 1e-6)
+                 split_indices = (split_ratio * T).long()
+
+             else:
+                 # Local Chunk Logic
+                 if self.enable_fusion:
+                     # Clamp split times to the chunk processing duration (e.g. 10s)
+                     split_times = torch.clamp(split_times, max=chuck_duration)
+                 
+                 # Calculate indices for splitting based on chunk duration
+                 split_indices = (split_times / chuck_duration * T).long()
              
-             # Calculate indices for splitting
-             split_indices = (split_times / total_duration * T).long()
+             split_indices = torch.clamp(split_indices, min=0, max=T)
              split_indices = torch.clamp(split_indices, min=0, max=T)
 
              # Create masks for first and second event

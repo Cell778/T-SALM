@@ -276,11 +276,15 @@ class sCLAPDataset(BaseDataset):
         is_triplet = isinstance(audioitem, (tuple, list)) and len(audioitem) == 3
 
         ori_audio_duration = 0.0
+        real_total_duration = 0.0
 
         # -------- audio --------
         if not is_triplet:
             audiofile = audioitem
             audio, sr = torchaudio.load(audiofile)
+            
+            # Use actual audio length instead of metadata
+            real_total_duration = audio.shape[-1] / sr
             
             # Anchor Pass Preparation (Step 1): Initialize anchor containers
             # Default to zeros if we cannot split or dataset doesn't support it
@@ -301,8 +305,20 @@ class sCLAPDataset(BaseDataset):
                  try:
                      with open(temp_metafile, 'r') as f:
                         temp_md = json.load(f)
+                     
+                     # Extract Total Duration for Consistency Calculation
+                     real_total_duration = temp_md.get('duration', 0.0)
+                     if real_total_duration == 0.0 and 'audio_segments' in temp_md:
+                         real_total_duration = sum([s.get('duration', 0.0) for s in temp_md['audio_segments']])
+
                      if 'audio_segments' in temp_md and len(temp_md['audio_segments']) >= 2:
                          ori_audio_duration = temp_md['audio_segments'][0].get('duration', 0.0)
+                         if ori_audio_duration == 0.0:
+                             # Fallback to metadata for stClotho/Temporal datasets
+                             ori_audio_duration = temp_md['audio_segments'][0].get('metadata', {}).get('ori_audio_duration', 0.0)
+                         
+                         # Ensure we found a valid duration for splitting
+                         assert ori_audio_duration > 0, f"Missing ori_audio_duration in {temp_metafile}. Check 'duration' or 'metadata.ori_audio_duration'."
                          
                          if ori_audio_duration > 0:
                              # Slice Raw Audio
@@ -489,6 +505,7 @@ class sCLAPDataset(BaseDataset):
             'cart_doa': cart_doa,
             'longer': longer,
             'ori_audio_duration': ori_audio_duration,
+            'total_audio_duration': real_total_duration,
             'text_c0': text_c0, 
             'text_c1': text_c1,
         }
